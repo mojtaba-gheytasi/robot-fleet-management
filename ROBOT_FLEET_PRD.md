@@ -1,11 +1,5 @@
 # Robot Fleet Management — Product Requirements Document
 
-**Product:** Robot Fleet Management  
-**Status:** Approved scope for implementation  
-**Version:** 1.0  
-**Scope:** Backend HTTP API and domain behavior
-**Updated:** 25 October 2026
-
 ## 1. Product overview
 
 Robot Fleet Management gives fleet operators a dependable view of robots assigned to operational sites. It receives reports describing each robot's position, battery level and operating mode; retains observation history; maintains the latest operational state; and identifies battery conditions requiring attention. Its HTTP API exposes current fleet information and alert-management operations to external clients.
@@ -56,7 +50,7 @@ An observation represents a robot's report at a specified device time; receipt t
 - **TEL-01** — Each observation includes an observation ID, device observation time, battery percentage, site-local two-dimensional position, and reported operating mode.
 - **TEL-02** — Battery percentage is within `0–100`, coordinates are finite numeric values, and operating mode is one of `IDLE`, `WORKING`, `CHARGING`, or `ERROR`.
 - **TEL-03** — Position values are measured in metres relative to the robot's assigned site's local coordinate system. No map rendering or floor-plan representation is defined.
-- **TEL-04** — A previously unseen valid observation newer than the current observation is **applied**: it is recorded in history, becomes latest state, and may affect battery health or alerts. When a robot has no current observation, its first valid observation is applied.
+- **TEL-04** — A previously unseen valid observation newer than the current observation is **applied**: it is recorded in history, becomes latest state, and may change battery health. Alerts follow from battery health (§4.4). When a robot has no current observation, its first valid observation is applied.
 - **TEL-05** — A previously unseen valid observation at or before the current observation time is **superseded**: it is recorded in history but does not change current state, connectivity's last-applied receipt time, health, or alerts. There is no limit on how old an observation can be; old observations are still recorded.
 - **TEL-06** — An exact replay of a previously recorded `(robot ID, observation ID, payload)` is **duplicate**: it makes no additional change. Reuse of the same observation ID with different content is a **conflict**.
 - **TEL-07** — Concurrent arrivals must never allow an older observation to overwrite newer current state. Observation ordering uses device-reported observation time.
@@ -93,11 +87,11 @@ An observation represents a robot's report at a specified device time; receipt t
 
 ### 4.4 Low-battery alert management
 
-- **ALT-01** — When a current observation establishes an actionable `LOW` battery condition for an active robot, the system ensures an unresolved low-battery alert exists.
+- **ALT-01** — When an active robot's battery health is `LOW`, an unresolved low-battery alert is opened **within 5 seconds**. After reactivation, this waits for the robot's next applied observation (REG-07).
 - **ALT-02** — A robot can have **at most one unresolved** low-battery alert, whether `OPEN` or `ACKNOWLEDGED`.
 - **ALT-03** — An alert begins in `OPEN`. Acknowledgement changes it to `ACKNOWLEDGED` and does not indicate battery recovery.
 - **ALT-04** — Repeating acknowledgement of an already `ACKNOWLEDGED` alert is successful and idempotent, with no further state change.
-- **ALT-05** — Once the battery reaches the recovery threshold through a current applied observation, the unresolved alert becomes `RESOLVED`, regardless of whether it was acknowledged.
+- **ALT-05** — Once the robot's battery health returns to `NORMAL`, its unresolved alert becomes `RESOLVED` **within 5 seconds**, regardless of whether it was acknowledged.
 - **ALT-06** — Deactivating the robot changes an unresolved alert to `CLOSED` with reason `ROBOT_DEACTIVATED`. `CLOSED` is distinct from `RESOLVED` because no recovery was observed.
 - **ALT-07** — `RESOLVED` and `CLOSED` are terminal alert states; they cannot be acknowledged. History is retained. Subsequent actionable low-battery reports may open a new alert.
 - **ALT-08** — The acknowledgement timestamp is retained. No verified operator identity is claimed because identity and access management are outside this project's scope.
@@ -113,7 +107,7 @@ An observation represents a robot's report at a specified device time; receipt t
 | OPEN / ACKNOWLEDGED | Robot deactivated | CLOSED; reason ROBOT_DEACTIVATED |
 | RESOLVED / CLOSED | Acknowledge | Conflict; no change |
 
-**Acceptance scenario:** Battery `60 → 18 → 15 → 30%` opens exactly one alert at 18%, keeps it unresolved at 15%, and resolves it at 30%. Deactivation while the alert is unresolved closes it with the explicit deactivation reason rather than calling it recovered.
+**Acceptance scenario:** Battery `60 → 18 → 15 → 30%` opens exactly one alert after the 18% reading, keeps it unresolved at 15%, and resolves it after the 30% reading. Deactivation while the alert is unresolved closes it with the explicit deactivation reason rather than calling it recovered.
 
 ### 4.5 Fleet visibility
 
@@ -128,7 +122,7 @@ An observation represents a robot's report at a specified device time; receipt t
 
 **A — Register and monitor:** A site exists; a robot is registered active; the first new observation applies current battery, position, mode, and health; subsequent reports update state.
 
-**B — Handle low battery:** A current report crosses below 20%; an alert opens; a manager acknowledges it; further low-battery reports do not duplicate it; a reading of at least 25% resolves it.
+**B — Handle low battery:** A current report crosses below 20%; within 5 seconds an alert opens; a manager acknowledges it; further low-battery reports do not duplicate it; within 5 seconds of a reading of at least 25%, it is resolved.
 
 **C — Buffered delivery:** The robot sends snapshot A (10:00:01), then B (10:00:02), but B arrives first. 
 B is applied and becomes the current state. 
@@ -179,7 +173,8 @@ Robots do not send a message when something happens. While powered on, each robo
 
 ## 7. Quality requirements
 
-- **Consistency:** Applying a current observation and its related alert effects must not result in partially visible state.
+- **Consistency:** Applying an observation, its history record and the robot's new state happen together or not at all.
+- **Alert freshness:** Alerts reflect robot state within 5 seconds.
 - **Idempotency:** Repeated deliveries and acknowledgements must have predictable, side-effect-free outcomes.
 - **Ordering:** Concurrent reports cannot regress the current operational view.
 - **Interpretability:** The API distinguishes observed time, backend receipt time, and the freshness of current state.
@@ -203,7 +198,7 @@ The lack of authentication and authorization is a **deliberate project constrain
 
 ## 9. Policy assumptions
 
-The business rules above use explicit assumptions: low below **20%**, recovery at **25%**, stale after **10 seconds** without applied telemetry, maximum **5 seconds** future-clock tolerance, trustworthy device ordering timestamps, and site-local two-dimensional coordinates in metres. They define the behavior of this product and are not asserted to be policies of any particular real-world robot operator.
+The business rules above use explicit assumptions: low below **20%**, recovery at **25%**, stale after **10 seconds** without applied telemetry, maximum **5 seconds** future-clock tolerance, alerts reconciled every **5 seconds**, trustworthy device ordering timestamps, and site-local two-dimensional coordinates in metres. They define the behavior of this product and are not asserted to be policies of any particular real-world robot operator.
 
 ## 10. Acceptance criteria
 
