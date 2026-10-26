@@ -35,6 +35,7 @@ type Robot struct {
 	siteID       SiteID
 	lifecycle    Lifecycle
 	registeredAt time.Time
+	activatedAt  time.Time
 
 	batteryHealth BatteryHealth
 	latest        *AppliedObservation
@@ -46,6 +47,7 @@ func NewRobot(id RobotID, siteID SiteID, now time.Time) (*Robot, error) {
 		siteID:        siteID,
 		lifecycle:     LifecycleActive,
 		registeredAt:  now,
+		activatedAt:   now,
 		batteryHealth: BatteryHealthUnknown,
 	}
 
@@ -61,6 +63,7 @@ func ReconstituteRobot(
 	siteID SiteID,
 	lifecycle Lifecycle,
 	registeredAt time.Time,
+	activatedAt time.Time,
 	batteryHealth BatteryHealth,
 	latest *AppliedObservation,
 ) (*Robot, error) {
@@ -69,6 +72,7 @@ func ReconstituteRobot(
 		siteID:        siteID,
 		lifecycle:     lifecycle,
 		registeredAt:  registeredAt,
+		activatedAt:   activatedAt,
 		batteryHealth: batteryHealth,
 		latest:        latest,
 	}
@@ -96,6 +100,23 @@ func (robot *Robot) RegisteredAt() time.Time {
 	return robot.registeredAt
 }
 
+func (robot *Robot) ActivatedAt() time.Time {
+	return robot.activatedAt
+}
+
+func (robot *Robot) Activate(now time.Time) {
+	if robot.lifecycle == LifecycleActive {
+		return
+	}
+
+	robot.lifecycle = LifecycleActive
+	robot.activatedAt = now
+}
+
+func (robot *Robot) Deactivate() {
+	robot.lifecycle = LifecycleInactive
+}
+
 func (robot *Robot) LatestObservation() (AppliedObservation, bool) {
 	if robot.latest == nil {
 		return AppliedObservation{}, false
@@ -105,6 +126,10 @@ func (robot *Robot) LatestObservation() (AppliedObservation, bool) {
 }
 
 func (robot *Robot) ApplyObservation(observation Observation, receivedAt time.Time) (ObservationOutcome, error) {
+	if robot.lifecycle == LifecycleInactive {
+		return "", ErrRobotInactive
+	}
+
 	if observation.ObservedAt().After(receivedAt.Add(maxClockSkew)) {
 		return "", fmt.Errorf(
 			"%w: observed at %s, more than %s after the server time %s",
@@ -162,8 +187,8 @@ func (robot *Robot) validate() error {
 		return fmt.Errorf("%w: unknown battery health %q", ErrInvalidRobot, robot.batteryHealth)
 	}
 
-	if robot.registeredAt.IsZero() {
-		return fmt.Errorf("%w: registration time is required", ErrInvalidRobot)
+	if robot.registeredAt.IsZero() || robot.activatedAt.IsZero() {
+		return fmt.Errorf("%w: registration and activation times are required", ErrInvalidRobot)
 	}
 
 	return nil

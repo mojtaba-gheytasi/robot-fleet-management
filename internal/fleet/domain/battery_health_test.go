@@ -82,7 +82,7 @@ func TestOperatingModeDoesNotAffectBatteryHealth(t *testing.T) {
 }
 
 func TestReconstituteRobotRejectsUnknownBatteryHealth(t *testing.T) {
-	_, err := domain.ReconstituteRobot("robot-101", "site-north", domain.LifecycleActive, now, "EMPTY", nil)
+	_, err := domain.ReconstituteRobot("robot-101", "site-north", domain.LifecycleActive, now, now, "EMPTY", nil)
 
 	require.ErrorIs(t, err, domain.ErrInvalidRobot)
 }
@@ -95,7 +95,7 @@ func robotWithHealth(t *testing.T, health domain.BatteryHealth) *domain.Robot {
 		latest = &domain.AppliedObservation{Observation: newObservation(t, "obs-current", now, 50), ReceivedAt: now}
 	}
 
-	robot, err := domain.ReconstituteRobot("robot-101", "site-north", domain.LifecycleActive, now, health, latest)
+	robot, err := domain.ReconstituteRobot("robot-101", "site-north", domain.LifecycleActive, now, now, health, latest)
 	require.NoError(t, err)
 
 	return robot

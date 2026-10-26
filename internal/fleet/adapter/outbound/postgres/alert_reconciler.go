@@ -14,11 +14,21 @@ const (
 
 	tryAlertCheckLockQuery = `SELECT pg_try_advisory_xact_lock($1)`
 
+	// The reading must be received after the last activation (REG-07), and is
+	// looked up in the shape the partial index answers; see the EXPLAIN test.
 	openLowBatteryAlertsQuery = `
 		INSERT INTO alerts (robot_id, kind, status, opened_at)
-		SELECT id, 'LOW_BATTERY', 'OPEN', $1
-		FROM robots
-		WHERE lifecycle = 'ACTIVE' AND battery_health = 'LOW'
+		SELECT r.id, 'LOW_BATTERY', 'OPEN', $1
+		FROM robots r
+		WHERE r.lifecycle = 'ACTIVE'
+			AND r.battery_health = 'LOW'
+			AND (
+				SELECT o.received_at
+				FROM telemetry_observations o
+				WHERE o.robot_id = r.id AND o.outcome = 'APPLIED'
+				ORDER BY o.observed_at DESC
+				LIMIT 1
+			) > r.activated_at
 		ON CONFLICT (robot_id, kind) WHERE status IN ('OPEN', 'ACKNOWLEDGED') DO NOTHING`
 
 	resolveRecoveredAlertsQuery = `
@@ -28,6 +38,14 @@ const (
 		WHERE a.robot_id = r.id
 			AND a.status IN ('OPEN', 'ACKNOWLEDGED')
 			AND r.battery_health = 'NORMAL'`
+
+	closeInactiveRobotsAlertsQuery = `
+		UPDATE alerts a
+		SET status = 'CLOSED', closure_reason = 'ROBOT_DEACTIVATED', ended_at = $1
+		FROM robots r
+		WHERE a.robot_id = r.id
+			AND a.status IN ('OPEN', 'ACKNOWLEDGED')
+			AND r.lifecycle = 'INACTIVE'`
 )
 
 type AlertReconciler struct {
@@ -67,11 +85,16 @@ func (reconciler *AlertReconciler) Reconcile(ctx context.Context, now time.Time)
 		return application.AlertReconciliation{}, fmt.Errorf("resolve alerts: %w", err)
 	}
 
+	closed, err := execCount(ctx, tx, closeInactiveRobotsAlertsQuery, now)
+	if err != nil {
+		return application.AlertReconciliation{}, fmt.Errorf("close alerts: %w", err)
+	}
+
 	if err := tx.Commit(); err != nil {
 		return application.AlertReconciliation{}, fmt.Errorf("commit transaction: %w", err)
 	}
 
-	return application.AlertReconciliation{Opened: opened, Resolved: resolved}, nil
+	return application.AlertReconciliation{Opened: opened, Resolved: resolved, Closed: closed}, nil
 }
 
 func execCount(ctx context.Context, tx *sql.Tx, query string, args ...any) (int, error) {

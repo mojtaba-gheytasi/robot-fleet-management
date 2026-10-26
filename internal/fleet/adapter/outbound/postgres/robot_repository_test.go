@@ -178,7 +178,7 @@ func TestRobotRepositoryListsRobotsWithTheirLatestObservation(t *testing.T) {
 }
 
 // Tiny tables favour a sequential scan, so it is switched off to test the query shape.
-func TestRobotQueriesUseThePartialIndexForTheCurrentObservation(t *testing.T) {
+func TestQueriesUseThePartialIndexForTheCurrentObservation(t *testing.T) {
 	ctx := context.Background()
 	db := startPostgres(t)
 
@@ -192,8 +192,9 @@ func TestRobotQueriesUseThePartialIndexForTheCurrentObservation(t *testing.T) {
 		query string
 		arg   any
 	}{
-		"find by id": {postgres.FindRobotByIDQuery, "robot-101"},
-		"list":       {postgres.ListRobotsQuery, nil},
+		"find by id":  {postgres.FindRobotByIDQuery, "robot-101"},
+		"list":        {postgres.ListRobotsQuery, nil},
+		"open alerts": {postgres.OpenLowBatteryAlertsQuery, registeredAt},
 	}
 
 	for name, tt := range queries {
@@ -241,13 +242,13 @@ func TestRobotRepositoryFindsAStoredObservation(t *testing.T) {
 	stored := applied(t, "obs-1", registeredAt.Add(time.Second), 18.5, registeredAt.Add(time.Minute))
 	addObservation(t, repository, "robot-101", stored, domain.ObservationApplied)
 
-	err := repository.WithLockedRobot(ctx, "robot-101", func(_ *domain.Robot, log application.ObservationLog) error {
-		found, ok, err := log.Find(ctx, "obs-1")
+	err := repository.WithLockedRobot(ctx, "robot-101", func(_ *domain.Robot, log application.RobotTx) error {
+		found, ok, err := log.FindObservation(ctx, "obs-1")
 		require.NoError(t, err)
 		require.True(t, ok)
 		assert.True(t, found.SameAs(stored.Observation))
 
-		_, ok, err = log.Find(ctx, "obs-404")
+		_, ok, err = log.FindObservation(ctx, "obs-404")
 		require.NoError(t, err)
 		assert.False(t, ok)
 
@@ -263,9 +264,9 @@ func TestRobotRepositoryRollsBackWhenTheWorkFails(t *testing.T) {
 	require.NoError(t, repository.Create(ctx, newRobot(t, "robot-101", "site-north")))
 	failure := errors.New("rule broken")
 
-	err := repository.WithLockedRobot(ctx, "robot-101", func(_ *domain.Robot, log application.ObservationLog) error {
+	err := repository.WithLockedRobot(ctx, "robot-101", func(_ *domain.Robot, log application.RobotTx) error {
 		reading := applied(t, "obs-1", registeredAt.Add(time.Second), 50, registeredAt.Add(time.Minute))
-		require.NoError(t, log.Add(ctx, reading.Observation, reading.ReceivedAt, domain.ObservationApplied))
+		require.NoError(t, log.AddObservation(ctx, reading.Observation, reading.ReceivedAt, domain.ObservationApplied))
 
 		return failure
 	})
@@ -277,7 +278,7 @@ func TestRobotRepositoryRollsBackWhenTheWorkFails(t *testing.T) {
 func TestRobotRepositoryLockUnknownRobot(t *testing.T) {
 	repository := postgres.NewRobotRepository(startPostgres(t))
 
-	err := repository.WithLockedRobot(context.Background(), "robot-404", func(*domain.Robot, application.ObservationLog) error {
+	err := repository.WithLockedRobot(context.Background(), "robot-404", func(*domain.Robot, application.RobotTx) error {
 		t.Fatal("must not run for an unknown robot")
 		return nil
 	})
@@ -408,11 +409,11 @@ func TestRobotRepositoryRollsBackTheBatteryHealthWithTheWork(t *testing.T) {
 	require.NoError(t, repository.Create(ctx, newRobot(t, "robot-101", "site-north")))
 	failure := errors.New("rule broken")
 
-	err := repository.WithLockedRobot(ctx, "robot-101", func(robot *domain.Robot, log application.ObservationLog) error {
+	err := repository.WithLockedRobot(ctx, "robot-101", func(robot *domain.Robot, log application.RobotTx) error {
 		reading := applied(t, "obs-1", registeredAt.Add(time.Second), 10, registeredAt.Add(time.Minute))
 		outcome, err := robot.ApplyObservation(reading.Observation, reading.ReceivedAt)
 		require.NoError(t, err)
-		require.NoError(t, log.Add(ctx, reading.Observation, reading.ReceivedAt, outcome))
+		require.NoError(t, log.AddObservation(ctx, reading.Observation, reading.ReceivedAt, outcome))
 		require.Equal(t, domain.BatteryHealthLow, robot.BatteryHealth())
 
 		return failure
@@ -423,6 +424,72 @@ func TestRobotRepositoryRollsBackTheBatteryHealthWithTheWork(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, domain.BatteryHealthUnknown, robot.BatteryHealth())
 	assert.Equal(t, 0, countObservations(t, db))
+}
+
+func TestDeactivateClosesTheUnresolvedAlertImmediately(t *testing.T) {
+	ctx := context.Background()
+	db := startPostgres(t)
+	repository := postgres.NewRobotRepository(db)
+	alertID := openAlert(t, db, "robot-101")
+	deactivateAt := checkedAt.Add(time.Minute)
+
+	_, err := application.NewDeactivateRobot(repository, clockAt(deactivateAt)).Execute(ctx, "robot-101")
+	require.NoError(t, err)
+
+	var status, reason string
+	var endedAt time.Time
+	require.NoError(t, db.QueryRow(`SELECT status, closure_reason, ended_at FROM alerts WHERE id = $1`, string(alertID)).
+		Scan(&status, &reason, &endedAt))
+	assert.Equal(t, "CLOSED", status)
+	assert.Equal(t, "ROBOT_DEACTIVATED", reason)
+	assert.True(t, endedAt.Equal(deactivateAt))
+
+	robot, err := repository.FindByID(ctx, "robot-101")
+	require.NoError(t, err)
+	assert.Equal(t, domain.LifecycleInactive, robot.Lifecycle())
+	assert.Equal(t, domain.BatteryHealthLow, robot.BatteryHealth())
+	_, ok := robot.LatestObservation()
+	assert.True(t, ok, "the last reading stays visible")
+}
+
+func TestDeactivateRollsBackTogetherWithTheAlertClose(t *testing.T) {
+	ctx := context.Background()
+	db := startPostgres(t)
+	repository := postgres.NewRobotRepository(db)
+	alertID := openAlert(t, db, "robot-101")
+	failure := errors.New("rule broken")
+
+	err := repository.WithLockedRobot(ctx, "robot-101", func(robot *domain.Robot, tx application.RobotTx) error {
+		robot.Deactivate()
+		_, err := tx.CloseUnresolvedAlerts(ctx, domain.ClosureReasonRobotDeactivated, checkedAt)
+		require.NoError(t, err)
+
+		return failure
+	})
+	require.ErrorIs(t, err, failure)
+
+	robot, err := repository.FindByID(ctx, "robot-101")
+	require.NoError(t, err)
+	assert.Equal(t, domain.LifecycleActive, robot.Lifecycle())
+	status, _ := alertState(t, db, alertID)
+	assert.Equal(t, "OPEN", status)
+}
+
+func TestActivateStoresTheActivationTime(t *testing.T) {
+	ctx := context.Background()
+	repository := postgres.NewRobotRepository(startPostgres(t))
+	require.NoError(t, repository.Create(ctx, newRobot(t, "robot-101", "site-north")))
+	_, err := application.NewDeactivateRobot(repository, clockAt(registeredAt.Add(time.Minute))).Execute(ctx, "robot-101")
+	require.NoError(t, err)
+	activateAt := registeredAt.Add(time.Hour)
+
+	_, err = application.NewActivateRobot(repository, clockAt(activateAt)).Execute(ctx, "robot-101")
+	require.NoError(t, err)
+
+	robot, err := repository.FindByID(ctx, "robot-101")
+	require.NoError(t, err)
+	assert.Equal(t, domain.LifecycleActive, robot.Lifecycle())
+	assert.True(t, robot.ActivatedAt().Equal(activateAt))
 }
 
 func reportBattery(t *testing.T, repository *postgres.RobotRepository, id string, second int, percent float64) {
@@ -465,8 +532,8 @@ func addObservation(
 ) {
 	t.Helper()
 
-	err := repository.WithLockedRobot(context.Background(), robotID, func(_ *domain.Robot, log application.ObservationLog) error {
-		return log.Add(context.Background(), reading.Observation, reading.ReceivedAt, outcome)
+	err := repository.WithLockedRobot(context.Background(), robotID, func(_ *domain.Robot, log application.RobotTx) error {
+		return log.AddObservation(context.Background(), reading.Observation, reading.ReceivedAt, outcome)
 	})
 	require.NoError(t, err)
 }

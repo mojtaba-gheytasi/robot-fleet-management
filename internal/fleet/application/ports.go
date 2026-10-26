@@ -17,12 +17,14 @@ type RobotRepository interface {
 
 	// WithLockedRobot runs fn while the robot row is locked and saves the robot's changes with it;
 	// an error from fn rolls everything back.
-	WithLockedRobot(ctx context.Context, id domain.RobotID, fn func(robot *domain.Robot, log ObservationLog) error) error
+	WithLockedRobot(ctx context.Context, id domain.RobotID, fn func(robot *domain.Robot, tx RobotTx) error) error
 }
 
-type ObservationLog interface {
-	Find(ctx context.Context, id domain.ObservationID) (domain.Observation, bool, error)
-	Add(ctx context.Context, observation domain.Observation, receivedAt time.Time, outcome domain.ObservationOutcome) error
+// RobotTx is what may be done in the transaction that holds the robot's lock.
+type RobotTx interface {
+	FindObservation(ctx context.Context, id domain.ObservationID) (domain.Observation, bool, error)
+	AddObservation(ctx context.Context, observation domain.Observation, receivedAt time.Time, outcome domain.ObservationOutcome) error
+	CloseUnresolvedAlerts(ctx context.Context, reason domain.ClosureReason, now time.Time) (int, error)
 }
 
 type Clock func() time.Time
@@ -36,6 +38,7 @@ type AlertReconciliation struct {
 	Skipped  bool
 	Opened   int
 	Resolved int
+	Closed   int
 }
 
 type AlertRepository interface {

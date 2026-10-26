@@ -52,8 +52,8 @@ func (useCase *RecordTelemetry) Execute(
 	err = useCase.robots.WithLockedRobot(
 		ctx,
 		domain.RobotID(command.RobotID),
-		func(robot *domain.Robot, log ObservationLog) error {
-			stored, found, err := log.Find(ctx, observation.ID())
+		func(robot *domain.Robot, tx RobotTx) error {
+			stored, found, err := tx.FindObservation(ctx, observation.ID())
 			if err != nil {
 				return fmt.Errorf("find observation: %w", err)
 			}
@@ -72,7 +72,7 @@ func (useCase *RecordTelemetry) Execute(
 				return err
 			}
 
-			if err := log.Add(ctx, observation, receivedAt, recorded); err != nil {
+			if err := tx.AddObservation(ctx, observation, receivedAt, recorded); err != nil {
 				return fmt.Errorf("add observation: %w", err)
 			}
 

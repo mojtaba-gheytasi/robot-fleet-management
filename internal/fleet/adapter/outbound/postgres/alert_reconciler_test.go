@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mojtaba-gheytasi/robot-fleet-management/internal/fleet/adapter/outbound/postgres"
+	"github.com/mojtaba-gheytasi/robot-fleet-management/internal/fleet/application"
 	"github.com/mojtaba-gheytasi/robot-fleet-management/internal/fleet/domain"
 )
 
@@ -139,10 +140,68 @@ func TestTheDatabaseRejectsASecondUnresolvedAlert(t *testing.T) {
 	assert.Equal(t, "alerts_one_unresolved_idx", postgresError.ConstraintName)
 }
 
+func TestAlertReconcilerClosesAlertsOfInactiveRobots(t *testing.T) {
+	ctx := context.Background()
+	db := startPostgres(t)
+	alertID := openAlert(t, db, "robot-101")
+	_, err := db.Exec(`UPDATE robots SET lifecycle = 'INACTIVE' WHERE id = 'robot-101'`)
+	require.NoError(t, err)
+
+	result, err := postgres.NewAlertReconciler(db).Reconcile(ctx, checkedAt.Add(time.Minute))
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, result.Closed)
+	var status, reason string
+	require.NoError(t, db.QueryRow(`SELECT status, closure_reason FROM alerts WHERE id = $1`, string(alertID)).Scan(&status, &reason))
+	assert.Equal(t, "CLOSED", status)
+	assert.Equal(t, "ROBOT_DEACTIVATED", reason)
+}
+
+func TestReactivatedRobotWaitsForAFreshReadingBeforeAnAlert(t *testing.T) {
+	tests := map[string]struct {
+		freshPercent float64
+		wantAlerts   int
+	}{
+		"still low": {18, 1},
+		"recovered": {30, 0},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			db := startPostgres(t)
+			robots := postgres.NewRobotRepository(db)
+			reconciler := postgres.NewAlertReconciler(db)
+			robotWithBatteryHealth(t, db, "robot-101", domain.BatteryHealthLow)
+			_, err := application.NewDeactivateRobot(robots, clockAt(registeredAt.Add(time.Hour))).Execute(ctx, "robot-101")
+			require.NoError(t, err)
+			reactivatedAt := registeredAt.Add(2 * time.Hour)
+			_, err = application.NewActivateRobot(robots, clockAt(reactivatedAt)).Execute(ctx, "robot-101")
+			require.NoError(t, err)
+
+			beforeReading, err := reconciler.Reconcile(ctx, reactivatedAt.Add(time.Second))
+			require.NoError(t, err)
+			assert.Equal(t, 0, beforeReading.Opened, "health is still LOW, but no reading arrived since reactivation")
+
+			command := telemetryCommand("obs-fresh", reactivatedAt.Add(time.Minute))
+			command.BatteryPercent = tt.freshPercent
+			_, err = application.NewRecordTelemetry(robots, clockAt(reactivatedAt.Add(time.Minute))).Execute(ctx, command)
+			require.NoError(t, err)
+
+			afterReading, err := reconciler.Reconcile(ctx, reactivatedAt.Add(2*time.Minute))
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAlerts, afterReading.Opened)
+		})
+	}
+}
+
 func robotWithBatteryHealth(t *testing.T, db *sql.DB, id domain.RobotID, health domain.BatteryHealth) {
 	t.Helper()
 
-	require.NoError(t, postgres.NewRobotRepository(db).Create(context.Background(), newRobot(t, id, "site-north")))
+	robots := postgres.NewRobotRepository(db)
+	require.NoError(t, robots.Create(context.Background(), newRobot(t, id, "site-north")))
+	reading := applied(t, "obs-1", registeredAt.Add(time.Second), 50, registeredAt.Add(time.Minute))
+	addObservation(t, robots, id, reading, domain.ObservationApplied)
 	setBatteryHealth(t, db, id, health)
 }
 

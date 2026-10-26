@@ -22,7 +22,7 @@ const (
 	// Shaped so the partial index answers the lateral lookup; see the EXPLAIN test.
 	selectRobotsQuery = `
 		SELECT
-			r.id, r.site_id, r.lifecycle, r.created_at, r.battery_health,
+			r.id, r.site_id, r.lifecycle, r.created_at, r.activated_at, r.battery_health,
 			o.observation_id, o.observed_at, o.received_at,
 			o.battery_percent, o.position_x, o.position_y, o.operating_mode
 		FROM robots r
@@ -45,8 +45,12 @@ const (
 	lockRobotQuery = `
 		SELECT id FROM robots WHERE id = $1 FOR UPDATE`
 
-	updateBatteryHealthQuery = `
-		UPDATE robots SET battery_health = $2 WHERE id = $1`
+	updateRobotQuery = `
+		UPDATE robots SET lifecycle = $2, activated_at = $3, battery_health = $4 WHERE id = $1`
+
+	closeUnresolvedAlertsQuery = `
+		UPDATE alerts SET status = 'CLOSED', closure_reason = $2, ended_at = $3
+		WHERE robot_id = $1 AND status IN ('OPEN', 'ACKNOWLEDGED')`
 
 	findObservationQuery = `
 		SELECT observation_id, observed_at, battery_percent, position_x, position_y, operating_mode
@@ -145,7 +149,7 @@ func (repository *RobotRepository) List(ctx context.Context, siteID *domain.Site
 func (repository *RobotRepository) WithLockedRobot(
 	ctx context.Context,
 	id domain.RobotID,
-	fn func(robot *domain.Robot, log application.ObservationLog) error,
+	fn func(robot *domain.Robot, tx application.RobotTx) error,
 ) error {
 	tx, err := repository.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -170,15 +174,17 @@ func (repository *RobotRepository) WithLockedRobot(
 		return fmt.Errorf("load locked robot: %w", err)
 	}
 
-	loadedHealth := robot.BatteryHealth()
+	loaded := savedRobotState(robot)
 
-	if err := fn(robot, &observationLog{tx: tx, robotID: id}); err != nil {
+	if err := fn(robot, &robotTx{tx: tx, robotID: id}); err != nil {
 		return err
 	}
 
-	if robot.BatteryHealth() != loadedHealth {
-		if _, err := tx.ExecContext(ctx, updateBatteryHealthQuery, string(id), string(robot.BatteryHealth())); err != nil {
-			return fmt.Errorf("update battery health: %w", err)
+	if changed := savedRobotState(robot); changed != loaded {
+		_, err := tx.ExecContext(ctx, updateRobotQuery,
+			string(id), string(changed.lifecycle), changed.activatedAt, string(changed.batteryHealth))
+		if err != nil {
+			return fmt.Errorf("update robot: %w", err)
 		}
 	}
 
@@ -189,12 +195,26 @@ func (repository *RobotRepository) WithLockedRobot(
 	return nil
 }
 
-type observationLog struct {
+type robotState struct {
+	lifecycle     domain.Lifecycle
+	activatedAt   time.Time
+	batteryHealth domain.BatteryHealth
+}
+
+func savedRobotState(robot *domain.Robot) robotState {
+	return robotState{
+		lifecycle:     robot.Lifecycle(),
+		activatedAt:   robot.ActivatedAt(),
+		batteryHealth: robot.BatteryHealth(),
+	}
+}
+
+type robotTx struct {
 	tx      *sql.Tx
 	robotID domain.RobotID
 }
 
-func (log *observationLog) Find(ctx context.Context, id domain.ObservationID) (domain.Observation, bool, error) {
+func (log *robotTx) FindObservation(ctx context.Context, id domain.ObservationID) (domain.Observation, bool, error) {
 	var (
 		observationID  string
 		observedAt     time.Time
@@ -221,7 +241,7 @@ func (log *observationLog) Find(ctx context.Context, id domain.ObservationID) (d
 	return observation, true, nil
 }
 
-func (log *observationLog) Add(
+func (log *robotTx) AddObservation(
 	ctx context.Context,
 	observation domain.Observation,
 	receivedAt time.Time,
@@ -248,6 +268,20 @@ func (log *observationLog) Add(
 	return nil
 }
 
+func (log *robotTx) CloseUnresolvedAlerts(ctx context.Context, reason domain.ClosureReason, now time.Time) (int, error) {
+	result, err := log.tx.ExecContext(ctx, closeUnresolvedAlertsQuery, string(log.robotID), string(reason), now)
+	if err != nil {
+		return 0, fmt.Errorf("close unresolved alerts: %w", err)
+	}
+
+	closed, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("read closed alert count: %w", err)
+	}
+
+	return int(closed), nil
+}
+
 type rowScanner interface {
 	Scan(dest ...any) error
 }
@@ -258,6 +292,7 @@ func scanRobot(row rowScanner) (*domain.Robot, error) {
 		siteID        string
 		lifecycle     string
 		registeredAt  time.Time
+		activatedAt   time.Time
 		batteryHealth string
 
 		observationID  sql.NullString
@@ -270,7 +305,7 @@ func scanRobot(row rowScanner) (*domain.Robot, error) {
 	)
 
 	if err := row.Scan(
-		&robotID, &siteID, &lifecycle, &registeredAt, &batteryHealth,
+		&robotID, &siteID, &lifecycle, &registeredAt, &activatedAt, &batteryHealth,
 		&observationID, &observedAt, &receivedAt,
 		&batteryPercent, &positionX, &positionY, &operatingMode,
 	); err != nil {
@@ -299,6 +334,7 @@ func scanRobot(row rowScanner) (*domain.Robot, error) {
 		domain.SiteID(siteID),
 		domain.Lifecycle(lifecycle),
 		registeredAt,
+		activatedAt,
 		domain.BatteryHealth(batteryHealth),
 		latest,
 	)

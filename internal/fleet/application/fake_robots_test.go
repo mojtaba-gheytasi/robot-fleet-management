@@ -19,7 +19,14 @@ type fakeRobots struct {
 	createCalls  int
 	listedSiteID *domain.SiteID
 	added        []recordedObservation
+	closedAlerts []closedAlerts
 	mutex        sync.Mutex
+}
+
+type closedAlerts struct {
+	robotID domain.RobotID
+	reason  domain.ClosureReason
+	at      time.Time
 }
 
 type recordedObservation struct {
@@ -42,7 +49,7 @@ func (robots *fakeRobots) store(
 ) {
 	t.Helper()
 
-	robot, err := domain.ReconstituteRobot(id, siteID, lifecycle, registeredAt, domain.BatteryHealthUnknown, nil)
+	robot, err := domain.ReconstituteRobot(id, siteID, lifecycle, registeredAt, registeredAt, domain.BatteryHealthUnknown, nil)
 	require.NoError(t, err)
 	robots.stored[id] = robot
 }
@@ -87,7 +94,7 @@ func (robots *fakeRobots) List(_ context.Context, siteID *domain.SiteID) ([]*dom
 func (robots *fakeRobots) WithLockedRobot(
 	ctx context.Context,
 	id domain.RobotID,
-	fn func(robot *domain.Robot, log application.ObservationLog) error,
+	fn func(robot *domain.Robot, tx application.RobotTx) error,
 ) error {
 	robots.mutex.Lock()
 	defer robots.mutex.Unlock()
@@ -97,23 +104,25 @@ func (robots *fakeRobots) WithLockedRobot(
 		return err
 	}
 
-	log := &fakeObservationLog{robotID: id, robots: robots}
-	if err := fn(robot, log); err != nil {
+	tx := &fakeRobotTx{robotID: id, robots: robots}
+	if err := fn(robot, tx); err != nil {
 		return err
 	}
 
-	robots.added = append(robots.added, log.pending...)
+	robots.added = append(robots.added, tx.pending...)
+	robots.closedAlerts = append(robots.closedAlerts, tx.closed...)
 
 	return nil
 }
 
-type fakeObservationLog struct {
+type fakeRobotTx struct {
 	robotID domain.RobotID
 	robots  *fakeRobots
 	pending []recordedObservation
+	closed  []closedAlerts
 }
 
-func (log *fakeObservationLog) Find(_ context.Context, id domain.ObservationID) (domain.Observation, bool, error) {
+func (log *fakeRobotTx) FindObservation(_ context.Context, id domain.ObservationID) (domain.Observation, bool, error) {
 	for _, recorded := range log.robots.added {
 		if recorded.robotID == log.robotID && recorded.observation.ID() == id {
 			return recorded.observation, true, nil
@@ -123,7 +132,7 @@ func (log *fakeObservationLog) Find(_ context.Context, id domain.ObservationID) 
 	return domain.Observation{}, false, nil
 }
 
-func (log *fakeObservationLog) Add(
+func (log *fakeRobotTx) AddObservation(
 	_ context.Context,
 	observation domain.Observation,
 	receivedAt time.Time,
@@ -137,4 +146,10 @@ func (log *fakeObservationLog) Add(
 	})
 
 	return nil
+}
+
+func (log *fakeRobotTx) CloseUnresolvedAlerts(_ context.Context, reason domain.ClosureReason, now time.Time) (int, error) {
+	log.closed = append(log.closed, closedAlerts{robotID: log.robotID, reason: reason, at: now})
+
+	return 1, nil
 }

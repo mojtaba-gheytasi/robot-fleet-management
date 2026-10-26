@@ -60,14 +60,14 @@ func TestNewRobotRejectsInvalidRegistrations(t *testing.T) {
 }
 
 func TestReconstituteRobotKeepsStoredLifecycle(t *testing.T) {
-	robot, err := domain.ReconstituteRobot("robot-101", "site-north", domain.LifecycleInactive, now, domain.BatteryHealthUnknown, nil)
+	robot, err := domain.ReconstituteRobot("robot-101", "site-north", domain.LifecycleInactive, now, now, domain.BatteryHealthUnknown, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, domain.LifecycleInactive, robot.Lifecycle())
 }
 
 func TestReconstituteRobotRejectsUnknownLifecycle(t *testing.T) {
-	_, err := domain.ReconstituteRobot("robot-101", "site-north", "PAUSED", now, domain.BatteryHealthUnknown, nil)
+	_, err := domain.ReconstituteRobot("robot-101", "site-north", "PAUSED", now, now, domain.BatteryHealthUnknown, nil)
 
 	require.ErrorIs(t, err, domain.ErrInvalidRobot)
 }
@@ -123,7 +123,7 @@ func TestConnectivityFollowsTheReceiptTimeOfTheLatestObservation(t *testing.T) {
 func TestReconstituteRobotKeepsTheLatestObservation(t *testing.T) {
 	latest := domain.AppliedObservation{Observation: newObservation(t, "obs-1", now, 50), ReceivedAt: now}
 
-	robot, err := domain.ReconstituteRobot("robot-101", "site-north", domain.LifecycleActive, now, domain.BatteryHealthNormal, &latest)
+	robot, err := domain.ReconstituteRobot("robot-101", "site-north", domain.LifecycleActive, now, now, domain.BatteryHealthNormal, &latest)
 	require.NoError(t, err)
 
 	stored, ok := robot.LatestObservation()

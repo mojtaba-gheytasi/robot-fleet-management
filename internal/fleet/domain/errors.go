@@ -9,4 +9,5 @@ var (
 	ErrInvalidObservation  = errors.New("invalid observation")
 	ErrObservationConflict = errors.New("observation id already used with different content")
 	ErrClockSkewExceeded   = errors.New("observation time is too far ahead of the server")
+	ErrRobotInactive       = errors.New("robot is inactive")
 )

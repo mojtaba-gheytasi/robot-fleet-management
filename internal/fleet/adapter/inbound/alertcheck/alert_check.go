@@ -48,7 +48,7 @@ func (check *AlertCheck) runOnce(ctx context.Context) {
 	}
 
 	level := slog.LevelDebug
-	if result.Opened > 0 || result.Resolved > 0 {
+	if result.Opened > 0 || result.Resolved > 0 || result.Closed > 0 {
 		level = slog.LevelInfo
 	}
 
@@ -56,5 +56,6 @@ func (check *AlertCheck) runOnce(ctx context.Context) {
 		"skipped", result.Skipped,
 		"opened", result.Opened,
 		"resolved", result.Resolved,
+		"closed", result.Closed,
 	)
 }
