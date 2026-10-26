@@ -2,7 +2,7 @@
 
 COMPOSE := docker compose
 
-.PHONY: help up down test test-integration migrate-up
+.PHONY: help up down test test-integration migrate-up demo
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*## "; printf "Usage: make <target>\n\n"} /^[a-zA-Z0-9_-]+:.*## / {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -21,3 +21,6 @@ test-integration: ## Run unit and integration tests; needs Docker
 
 migrate-up: ## Apply pending migrations to the Compose database
 	$(COMPOSE) run --rm migrate
+
+demo: ## Run every workflow against the running service; start it with make up first
+	./scripts/demo.sh
