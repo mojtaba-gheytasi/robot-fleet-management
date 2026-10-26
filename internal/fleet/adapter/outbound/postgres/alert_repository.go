@@ -3,8 +3,11 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/mojtaba-gheytasi/robot-fleet-management/internal/fleet/application"
 	"github.com/mojtaba-gheytasi/robot-fleet-management/internal/fleet/domain"
@@ -24,6 +27,15 @@ const (
 		WHERE status IN ('RESOLVED', 'CLOSED')
 		ORDER BY ended_at DESC, id
 		LIMIT $1`
+
+	lockAlertQuery = selectAlertsQuery + `
+		WHERE id = $1
+		FOR UPDATE`
+
+	updateAlertQuery = `
+		UPDATE alerts SET status = $2, acknowledged_at = $3 WHERE id = $1`
+
+	invalidTextRepresentation = "22P02"
 )
 
 type AlertRepository struct {
@@ -65,6 +77,47 @@ func (repository *AlertRepository) List(ctx context.Context, terminal bool, limi
 	return alerts, nil
 }
 
+func (repository *AlertRepository) WithLockedAlert(
+	ctx context.Context,
+	id domain.AlertID,
+	fn func(alert *domain.Alert) error,
+) error {
+	tx, err := repository.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	alert, err := scanAlert(tx.QueryRowContext(ctx, lockAlertQuery, string(id)))
+	if errors.Is(err, sql.ErrNoRows) || isNotAUUID(err) {
+		return application.ErrAlertNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("lock alert: %w", err)
+	}
+
+	loadedStatus := alert.Status()
+
+	if err := fn(alert); err != nil {
+		return err
+	}
+
+	if alert.Status() != loadedStatus {
+		acknowledgedAt, _ := alert.AcknowledgedAt()
+		if _, err := tx.ExecContext(ctx, updateAlertQuery, string(id), string(alert.Status()), nullTime(acknowledgedAt)); err != nil {
+			return fmt.Errorf("update alert: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+
+	return nil
+}
+
 func scanAlert(row rowScanner) (*domain.Alert, error) {
 	var (
 		id             string
@@ -96,6 +149,16 @@ func scanAlert(row rowScanner) (*domain.Alert, error) {
 	}
 
 	return alert, nil
+}
+
+func nullTime(value time.Time) sql.NullTime {
+	return sql.NullTime{Time: value, Valid: value.IsZero() == false}
+}
+
+func isNotAUUID(err error) bool {
+	var postgresError *pgconn.PgError
+
+	return errors.As(err, &postgresError) && postgresError.Code == invalidTextRepresentation
 }
 
 func nullableTime(value sql.NullTime) *time.Time {

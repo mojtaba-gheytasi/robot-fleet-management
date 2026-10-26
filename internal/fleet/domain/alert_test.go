@@ -48,3 +48,64 @@ func TestReconstituteAlertRejectsInvalidState(t *testing.T) {
 		})
 	}
 }
+
+func TestAcknowledgeAlert(t *testing.T) {
+	firstAcknowledged := now.Add(time.Minute)
+	endedAt := now.Add(2 * time.Minute)
+	acknowledgeAt := now.Add(3 * time.Minute)
+
+	tests := map[domain.AlertStatus]struct {
+		acknowledgedAt     *time.Time
+		endedAt            *time.Time
+		closureReason      domain.ClosureReason
+		wantErr            error
+		wantStatus         domain.AlertStatus
+		wantAcknowledgedAt *time.Time
+	}{
+		domain.AlertStatusOpen: {
+			wantStatus:         domain.AlertStatusAcknowledged,
+			wantAcknowledgedAt: &acknowledgeAt,
+		},
+		domain.AlertStatusAcknowledged: {
+			acknowledgedAt:     &firstAcknowledged,
+			wantStatus:         domain.AlertStatusAcknowledged,
+			wantAcknowledgedAt: &firstAcknowledged,
+		},
+		domain.AlertStatusResolved: {
+			endedAt:    &endedAt,
+			wantErr:    domain.ErrAlertTerminal,
+			wantStatus: domain.AlertStatusResolved,
+		},
+		domain.AlertStatusClosed: {
+			endedAt:       &endedAt,
+			closureReason: domain.ClosureReasonRobotDeactivated,
+			wantErr:       domain.ErrAlertTerminal,
+			wantStatus:    domain.AlertStatusClosed,
+		},
+	}
+
+	for status, tt := range tests {
+		t.Run(string(status), func(t *testing.T) {
+			alert, err := domain.ReconstituteAlert(
+				"alert-1", "robot-101", domain.AlertKindLowBattery, status, now, tt.acknowledgedAt, tt.endedAt, tt.closureReason,
+			)
+			require.NoError(t, err)
+
+			err = alert.Acknowledge(acknowledgeAt)
+
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.wantStatus, alert.Status())
+			acknowledgedAt, ok := alert.AcknowledgedAt()
+			if tt.wantAcknowledgedAt == nil {
+				assert.False(t, ok)
+			} else {
+				require.True(t, ok)
+				assert.Equal(t, *tt.wantAcknowledgedAt, acknowledgedAt)
+			}
+		})
+	}
+}

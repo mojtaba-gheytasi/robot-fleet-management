@@ -63,6 +63,19 @@ func ReconstituteAlert(
 	return alert, nil
 }
 
+func (alert *Alert) Acknowledge(now time.Time) error {
+	switch alert.status {
+	case AlertStatusOpen:
+		alert.status = AlertStatusAcknowledged
+		alert.acknowledgedAt = &now
+		return nil
+	case AlertStatusAcknowledged:
+		return nil
+	default:
+		return fmt.Errorf("%w: it is %s", ErrAlertTerminal, alert.status)
+	}
+}
+
 func (alert *Alert) ID() AlertID {
 	return alert.id
 }

@@ -40,4 +40,7 @@ type AlertReconciliation struct {
 
 type AlertRepository interface {
 	List(ctx context.Context, terminal bool, limit int) ([]*domain.Alert, error)
+
+	// WithLockedAlert runs fn while the alert row is locked and saves the alert's changes with it.
+	WithLockedAlert(ctx context.Context, id domain.AlertID, fn func(alert *domain.Alert) error) error
 }

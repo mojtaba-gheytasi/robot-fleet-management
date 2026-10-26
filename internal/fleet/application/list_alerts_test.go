@@ -46,6 +46,7 @@ func TestListAlertsPassesTheState(t *testing.T) {
 type fakeAlerts struct {
 	terminal bool
 	limit    int
+	stored   map[domain.AlertID]*domain.Alert
 }
 
 func (alerts *fakeAlerts) List(_ context.Context, terminal bool, limit int) ([]*domain.Alert, error) {
@@ -53,4 +54,13 @@ func (alerts *fakeAlerts) List(_ context.Context, terminal bool, limit int) ([]*
 	alerts.limit = limit
 
 	return nil, nil
+}
+
+func (alerts *fakeAlerts) WithLockedAlert(_ context.Context, id domain.AlertID, fn func(alert *domain.Alert) error) error {
+	alert, ok := alerts.stored[id]
+	if ok == false {
+		return application.ErrAlertNotFound
+	}
+
+	return fn(alert)
 }
