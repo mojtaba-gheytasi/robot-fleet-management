@@ -9,6 +9,7 @@ const (
 	maxRobotIDLength = 64
 
 	onlineWindow = 10 * time.Second
+	maxClockSkew = 5 * time.Second
 )
 
 type RobotID string
@@ -103,11 +104,24 @@ func (robot *Robot) LatestObservation() (AppliedObservation, bool) {
 	return *robot.latest, true
 }
 
-func (robot *Robot) ApplyObservation(observation Observation, receivedAt time.Time) AppliedObservation {
-	applied := AppliedObservation{Observation: observation, ReceivedAt: receivedAt}
-	robot.latest = &applied
+func (robot *Robot) ApplyObservation(observation Observation, receivedAt time.Time) (ObservationOutcome, error) {
+	if observation.ObservedAt().After(receivedAt.Add(maxClockSkew)) {
+		return "", fmt.Errorf(
+			"%w: observed at %s, more than %s after the server time %s",
+			ErrClockSkewExceeded,
+			observation.ObservedAt().Format(time.RFC3339Nano),
+			maxClockSkew,
+			receivedAt.UTC().Format(time.RFC3339Nano),
+		)
+	}
 
-	return applied
+	if robot.latest != nil && observation.ObservedAt().After(robot.latest.Observation.ObservedAt()) == false {
+		return ObservationSuperseded, nil
+	}
+
+	robot.latest = &AppliedObservation{Observation: observation, ReceivedAt: receivedAt}
+
+	return ObservationApplied, nil
 }
 
 func (robot *Robot) BatteryHealth() BatteryHealth {

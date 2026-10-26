@@ -77,11 +77,12 @@ func TestApplyObservationBecomesTheCurrentState(t *testing.T) {
 	require.NoError(t, err)
 	observation := newObservation(t, "obs-1", now, 18.5)
 
-	applied := robot.ApplyObservation(observation, now.Add(time.Second))
+	outcome, err := robot.ApplyObservation(observation, now.Add(time.Second))
+	require.NoError(t, err)
 
+	assert.Equal(t, domain.ObservationApplied, outcome)
 	latest, ok := robot.LatestObservation()
 	require.True(t, ok)
-	assert.Equal(t, applied, latest)
 	assert.Equal(t, observation, latest.Observation)
 	assert.Equal(t, now.Add(time.Second), latest.ReceivedAt)
 }
@@ -128,4 +129,52 @@ func TestReconstituteRobotKeepsTheLatestObservation(t *testing.T) {
 	stored, ok := robot.LatestObservation()
 	require.True(t, ok)
 	assert.Equal(t, latest, stored)
+}
+
+func TestApplyObservationOnlyLetsANewerObservationBecomeCurrent(t *testing.T) {
+	current := now.Add(time.Minute)
+	tests := map[string]struct {
+		observedAt  time.Time
+		wantOutcome domain.ObservationOutcome
+		wantLatest  domain.ObservationID
+	}{
+		"newer":     {current.Add(time.Microsecond), domain.ObservationApplied, "obs-new"},
+		"same time": {current, domain.ObservationSuperseded, "obs-current"},
+		"older":     {current.Add(-time.Hour), domain.ObservationSuperseded, "obs-current"},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			robot, err := domain.NewRobot("robot-101", "site-north", now)
+			require.NoError(t, err)
+			_, err = robot.ApplyObservation(newObservation(t, "obs-current", current, 50), current)
+			require.NoError(t, err)
+
+			outcome, err := robot.ApplyObservation(newObservation(t, "obs-new", tt.observedAt, 40), current.Add(time.Second))
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.wantOutcome, outcome)
+			latest, _ := robot.LatestObservation()
+			assert.Equal(t, tt.wantLatest, latest.Observation.ID())
+		})
+	}
+}
+
+func TestApplyObservationRejectsATimeTooFarAheadOfTheServer(t *testing.T) {
+	receivedAt := now.Add(time.Minute)
+
+	robot, err := domain.NewRobot("robot-101", "site-north", now)
+	require.NoError(t, err)
+
+	outcome, err := robot.ApplyObservation(newObservation(t, "obs-1", receivedAt.Add(5*time.Second), 50), receivedAt)
+	require.NoError(t, err)
+	assert.Equal(t, domain.ObservationApplied, outcome)
+
+	_, err = robot.ApplyObservation(
+		newObservation(t, "obs-2", receivedAt.Add(5*time.Second+time.Microsecond), 50),
+		receivedAt,
+	)
+	require.ErrorIs(t, err, domain.ErrClockSkewExceeded)
+	latest, _ := robot.LatestObservation()
+	assert.Equal(t, domain.ObservationID("obs-1"), latest.Observation.ID())
 }

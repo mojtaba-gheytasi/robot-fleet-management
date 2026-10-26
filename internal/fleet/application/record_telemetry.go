@@ -20,7 +20,11 @@ type RecordTelemetryCommand struct {
 
 type TelemetryOutcome string
 
-const TelemetryOutcomeApplied TelemetryOutcome = "applied"
+const (
+	TelemetryOutcomeApplied    TelemetryOutcome = "applied"
+	TelemetryOutcomeSuperseded TelemetryOutcome = "superseded"
+	TelemetryOutcomeDuplicate  TelemetryOutcome = "duplicate"
+)
 
 type RecordTelemetryResult struct {
 	Outcome TelemetryOutcome
@@ -44,18 +48,47 @@ func (useCase *RecordTelemetry) Execute(
 		return RecordTelemetryResult{}, err
 	}
 
-	robot, err := useCase.robots.FindByID(ctx, domain.RobotID(command.RobotID))
+	var outcome TelemetryOutcome
+	err = useCase.robots.WithLockedRobot(
+		ctx,
+		domain.RobotID(command.RobotID),
+		func(robot *domain.Robot, log ObservationLog) error {
+			stored, found, err := log.Find(ctx, observation.ID())
+			if err != nil {
+				return fmt.Errorf("find observation: %w", err)
+			}
+			if found {
+				if stored.SameAs(observation) == false {
+					return domain.ErrObservationConflict
+				}
+
+				outcome = TelemetryOutcomeDuplicate
+				return nil
+			}
+
+			receivedAt := useCase.clock()
+			recorded, err := robot.ApplyObservation(observation, receivedAt)
+			if err != nil {
+				return err
+			}
+
+			if err := log.Add(ctx, observation, receivedAt, recorded); err != nil {
+				return fmt.Errorf("add observation: %w", err)
+			}
+
+			outcome = TelemetryOutcomeApplied
+			if recorded == domain.ObservationSuperseded {
+				outcome = TelemetryOutcomeSuperseded
+			}
+
+			return nil
+		},
+	)
 	if err != nil {
-		return RecordTelemetryResult{}, fmt.Errorf("find robot: %w", err)
+		return RecordTelemetryResult{}, err
 	}
 
-	applied := robot.ApplyObservation(observation, useCase.clock())
-
-	if err := useCase.robots.AddAppliedObservation(ctx, robot.ID(), applied); err != nil {
-		return RecordTelemetryResult{}, fmt.Errorf("add applied observation: %w", err)
-	}
-
-	return RecordTelemetryResult{Outcome: TelemetryOutcomeApplied}, nil
+	return RecordTelemetryResult{Outcome: outcome}, nil
 }
 
 func observationFrom(command RecordTelemetryCommand) (domain.Observation, error) {

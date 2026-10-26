@@ -121,3 +121,43 @@ func position(t *testing.T) domain.Position {
 
 	return value
 }
+
+func TestObservationSameAs(t *testing.T) {
+	original := newObservation(t, "obs-1", now, 50)
+	berlin := time.FixedZone("UTC+2", 2*60*60)
+	sameInstant, err := domain.NewObservation("obs-1", now.In(berlin), battery(t, 50), position(t), domain.OperatingModeWorking)
+	require.NoError(t, err)
+	assert.True(t, original.SameAs(sameInstant))
+
+	otherPosition, err := domain.NewPosition(12.5, 24.9)
+	require.NoError(t, err)
+	differences := map[string]domain.Observation{
+		"id":       newObservation(t, "obs-2", now, 50),
+		"time":     newObservation(t, "obs-1", now.Add(time.Microsecond), 50),
+		"battery":  newObservation(t, "obs-1", now, 50.01),
+		"position": mustObservation(t, "obs-1", now, battery(t, 50), otherPosition, domain.OperatingModeWorking),
+		"mode":     mustObservation(t, "obs-1", now, battery(t, 50), position(t), domain.OperatingModeIdle),
+	}
+
+	for name, other := range differences {
+		t.Run(name, func(t *testing.T) {
+			assert.False(t, original.SameAs(other))
+		})
+	}
+}
+
+func mustObservation(
+	t *testing.T,
+	id domain.ObservationID,
+	observedAt time.Time,
+	level domain.BatteryLevel,
+	at domain.Position,
+	mode domain.OperatingMode,
+) domain.Observation {
+	t.Helper()
+
+	observation, err := domain.NewObservation(id, observedAt, level, at, mode)
+	require.NoError(t, err)
+
+	return observation
+}

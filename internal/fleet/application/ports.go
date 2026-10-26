@@ -15,7 +15,13 @@ type RobotRepository interface {
 	// List with a nil siteID returns every site.
 	List(ctx context.Context, siteID *domain.SiteID) ([]*domain.Robot, error)
 
-	AddAppliedObservation(ctx context.Context, robotID domain.RobotID, applied domain.AppliedObservation) error
+	// WithLockedRobot runs fn while the robot row is locked; an error from fn rolls back.
+	WithLockedRobot(ctx context.Context, id domain.RobotID, fn func(robot *domain.Robot, log ObservationLog) error) error
+}
+
+type ObservationLog interface {
+	Find(ctx context.Context, id domain.ObservationID) (domain.Observation, bool, error)
+	Add(ctx context.Context, observation domain.Observation, receivedAt time.Time, outcome domain.ObservationOutcome) error
 }
 
 type Clock func() time.Time

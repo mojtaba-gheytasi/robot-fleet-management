@@ -9,6 +9,13 @@ const maxObservationIDLength = 64
 
 type ObservationID string
 
+type ObservationOutcome string
+
+const (
+	ObservationApplied    ObservationOutcome = "APPLIED"
+	ObservationSuperseded ObservationOutcome = "SUPERSEDED"
+)
+
 type Observation struct {
 	id            ObservationID
 	observedAt    time.Time
@@ -71,6 +78,14 @@ func (observation Observation) Position() Position {
 
 func (observation Observation) OperatingMode() OperatingMode {
 	return observation.operatingMode
+}
+
+func (observation Observation) SameAs(other Observation) bool {
+	return observation.id == other.id &&
+		observation.observedAt.Equal(other.observedAt) &&
+		observation.battery == other.battery &&
+		observation.position == other.position &&
+		observation.operatingMode == other.operatingMode
 }
 
 type AppliedObservation struct {

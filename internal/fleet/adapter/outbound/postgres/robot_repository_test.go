@@ -4,7 +4,13 @@ package postgres_test
 
 import (
 	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"math/rand/v2"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -140,8 +146,8 @@ func TestRobotRepositoryLoadsTheNewestAppliedObservation(t *testing.T) {
 	newer := applied(t, "obs-2", registeredAt.Add(2*time.Second), 18.5, registeredAt.Add(time.Minute))
 	older := applied(t, "obs-1", registeredAt.Add(time.Second), 60, registeredAt.Add(2*time.Minute))
 	// Inserted newest first, so "latest" cannot mean "last inserted".
-	require.NoError(t, repository.AddAppliedObservation(ctx, "robot-101", newer))
-	require.NoError(t, repository.AddAppliedObservation(ctx, "robot-101", older))
+	addObservation(t, repository, "robot-101", newer, domain.ObservationApplied)
+	addObservation(t, repository, "robot-101", older, domain.ObservationApplied)
 
 	robot, err := repository.FindByID(ctx, "robot-101")
 	require.NoError(t, err)
@@ -157,7 +163,7 @@ func TestRobotRepositoryListsRobotsWithTheirLatestObservation(t *testing.T) {
 	require.NoError(t, repository.Create(ctx, newRobot(t, "robot-101", "site-north")))
 	require.NoError(t, repository.Create(ctx, newRobot(t, "robot-102", "site-north")))
 	reported := applied(t, "obs-1", registeredAt.Add(time.Second), 42.25, registeredAt.Add(time.Minute))
-	require.NoError(t, repository.AddAppliedObservation(ctx, "robot-101", reported))
+	addObservation(t, repository, "robot-101", reported, domain.ObservationApplied)
 
 	robots, err := repository.List(ctx, nil)
 	require.NoError(t, err)
@@ -208,6 +214,199 @@ func TestRobotQueriesUseThePartialIndexForTheCurrentObservation(t *testing.T) {
 			assert.NotContains(t, plan.String(), "Seq Scan on telemetry_observations", plan.String())
 		})
 	}
+}
+
+func TestRobotRepositorySupersededObservationIsStoredButNotCurrent(t *testing.T) {
+	ctx := context.Background()
+	db := startPostgres(t)
+	repository := postgres.NewRobotRepository(db)
+	require.NoError(t, repository.Create(ctx, newRobot(t, "robot-101", "site-north")))
+	current := applied(t, "obs-2", registeredAt.Add(2*time.Second), 50, registeredAt.Add(time.Minute))
+	addObservation(t, repository, "robot-101", current, domain.ObservationApplied)
+
+	late := applied(t, "obs-3", registeredAt.Add(3*time.Second), 10, registeredAt.Add(2*time.Minute))
+	addObservation(t, repository, "robot-101", late, domain.ObservationSuperseded)
+
+	robot, err := repository.FindByID(ctx, "robot-101")
+	require.NoError(t, err)
+	latest, _ := robot.LatestObservation()
+	assert.Equal(t, domain.ObservationID("obs-2"), latest.Observation.ID())
+	assert.Equal(t, 2, countObservations(t, db))
+}
+
+func TestRobotRepositoryFindsAStoredObservation(t *testing.T) {
+	ctx := context.Background()
+	repository := postgres.NewRobotRepository(startPostgres(t))
+	require.NoError(t, repository.Create(ctx, newRobot(t, "robot-101", "site-north")))
+	stored := applied(t, "obs-1", registeredAt.Add(time.Second), 18.5, registeredAt.Add(time.Minute))
+	addObservation(t, repository, "robot-101", stored, domain.ObservationApplied)
+
+	err := repository.WithLockedRobot(ctx, "robot-101", func(_ *domain.Robot, log application.ObservationLog) error {
+		found, ok, err := log.Find(ctx, "obs-1")
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.True(t, found.SameAs(stored.Observation))
+
+		_, ok, err = log.Find(ctx, "obs-404")
+		require.NoError(t, err)
+		assert.False(t, ok)
+
+		return nil
+	})
+	require.NoError(t, err)
+}
+
+func TestRobotRepositoryRollsBackWhenTheWorkFails(t *testing.T) {
+	ctx := context.Background()
+	db := startPostgres(t)
+	repository := postgres.NewRobotRepository(db)
+	require.NoError(t, repository.Create(ctx, newRobot(t, "robot-101", "site-north")))
+	failure := errors.New("rule broken")
+
+	err := repository.WithLockedRobot(ctx, "robot-101", func(_ *domain.Robot, log application.ObservationLog) error {
+		reading := applied(t, "obs-1", registeredAt.Add(time.Second), 50, registeredAt.Add(time.Minute))
+		require.NoError(t, log.Add(ctx, reading.Observation, reading.ReceivedAt, domain.ObservationApplied))
+
+		return failure
+	})
+
+	require.ErrorIs(t, err, failure)
+	assert.Equal(t, 0, countObservations(t, db))
+}
+
+func TestRobotRepositoryLockUnknownRobot(t *testing.T) {
+	repository := postgres.NewRobotRepository(startPostgres(t))
+
+	err := repository.WithLockedRobot(context.Background(), "robot-404", func(*domain.Robot, application.ObservationLog) error {
+		t.Fatal("must not run for an unknown robot")
+		return nil
+	})
+
+	require.ErrorIs(t, err, application.ErrRobotNotFound)
+}
+
+func TestConcurrentReportsForOneRobotNeverRegressCurrentState(t *testing.T) {
+	ctx := context.Background()
+	db := startPostgres(t)
+	repository := postgres.NewRobotRepository(db)
+	require.NoError(t, repository.Create(ctx, newRobot(t, "robot-101", "site-north")))
+	recordTelemetry := application.NewRecordTelemetry(repository, increasingClock())
+
+	const reports = 20
+	observedAt := make([]time.Time, reports)
+	for i := range observedAt {
+		observedAt[i] = registeredAt.Add(time.Duration(i+1) * time.Second)
+	}
+	rand.Shuffle(reports, func(i, j int) { observedAt[i], observedAt[j] = observedAt[j], observedAt[i] })
+
+	var wait sync.WaitGroup
+	for i, at := range observedAt {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			_, err := recordTelemetry.Execute(ctx, telemetryCommand(fmt.Sprintf("obs-%d", i), at))
+			assert.NoError(t, err)
+		}()
+	}
+	wait.Wait()
+
+	robot, err := repository.FindByID(ctx, "robot-101")
+	require.NoError(t, err)
+	latest, _ := robot.LatestObservation()
+	assert.True(t, latest.Observation.ObservedAt().Equal(registeredAt.Add(reports*time.Second)))
+	assert.Equal(t, reports, countObservations(t, db))
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT observed_at FROM telemetry_observations
+		WHERE outcome = 'APPLIED'
+		ORDER BY received_at`)
+	require.NoError(t, err)
+	defer rows.Close()
+
+	var previous time.Time
+	for rows.Next() {
+		var current time.Time
+		require.NoError(t, rows.Scan(&current))
+		assert.True(t, current.After(previous), "an applied observation is older than one applied before it")
+		previous = current
+	}
+	require.NoError(t, rows.Err())
+}
+
+func TestConcurrentResendsOfOneObservationApplyItOnce(t *testing.T) {
+	ctx := context.Background()
+	db := startPostgres(t)
+	repository := postgres.NewRobotRepository(db)
+	require.NoError(t, repository.Create(ctx, newRobot(t, "robot-101", "site-north")))
+	recordTelemetry := application.NewRecordTelemetry(repository, increasingClock())
+
+	var applied, duplicates atomic.Int32
+	var wait sync.WaitGroup
+	for range 10 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			result, err := recordTelemetry.Execute(ctx, telemetryCommand("obs-1", registeredAt.Add(time.Second)))
+			if assert.NoError(t, err) {
+				switch result.Outcome {
+				case application.TelemetryOutcomeApplied:
+					applied.Add(1)
+				case application.TelemetryOutcomeDuplicate:
+					duplicates.Add(1)
+				}
+			}
+		}()
+	}
+	wait.Wait()
+
+	assert.Equal(t, int32(1), applied.Load())
+	assert.Equal(t, int32(9), duplicates.Load())
+	assert.Equal(t, 1, countObservations(t, db))
+}
+
+// Each call is later than the last, so receipt order is exactly lock order.
+func increasingClock() application.Clock {
+	var calls atomic.Int64
+
+	return func() time.Time {
+		return registeredAt.Add(time.Hour + time.Duration(calls.Add(1))*time.Microsecond)
+	}
+}
+
+func telemetryCommand(id string, observedAt time.Time) application.RecordTelemetryCommand {
+	return application.RecordTelemetryCommand{
+		RobotID:        "robot-101",
+		ObservationID:  id,
+		ObservedAt:     observedAt,
+		BatteryPercent: 50,
+		PositionX:      1,
+		PositionY:      2,
+		OperatingMode:  "WORKING",
+	}
+}
+
+func addObservation(
+	t *testing.T,
+	repository *postgres.RobotRepository,
+	robotID domain.RobotID,
+	reading domain.AppliedObservation,
+	outcome domain.ObservationOutcome,
+) {
+	t.Helper()
+
+	err := repository.WithLockedRobot(context.Background(), robotID, func(_ *domain.Robot, log application.ObservationLog) error {
+		return log.Add(context.Background(), reading.Observation, reading.ReceivedAt, outcome)
+	})
+	require.NoError(t, err)
+}
+
+func countObservations(t *testing.T, db *sql.DB) int {
+	t.Helper()
+
+	var count int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM telemetry_observations`).Scan(&count))
+
+	return count
 }
 
 func applied(

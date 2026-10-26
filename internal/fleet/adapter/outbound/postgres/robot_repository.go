@@ -42,11 +42,19 @@ const (
 		WHERE $1::text IS NULL OR r.site_id = $1
 		ORDER BY r.id`
 
-	insertAppliedObservationQuery = `
+	lockRobotQuery = `
+		SELECT id FROM robots WHERE id = $1 FOR UPDATE`
+
+	findObservationQuery = `
+		SELECT observation_id, observed_at, battery_percent, position_x, position_y, operating_mode
+		FROM telemetry_observations
+		WHERE robot_id = $1 AND observation_id = $2`
+
+	insertObservationQuery = `
 		INSERT INTO telemetry_observations (
 			robot_id, observation_id, observed_at, received_at,
 			battery_percent, position_x, position_y, operating_mode, outcome
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'APPLIED')`
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
 
 	foreignKeyViolation = "23503"
 	siteForeignKey      = "robots_site_id_fkey"
@@ -131,28 +139,99 @@ func (repository *RobotRepository) List(ctx context.Context, siteID *domain.Site
 	return robots, nil
 }
 
-func (repository *RobotRepository) AddAppliedObservation(
+func (repository *RobotRepository) WithLockedRobot(
 	ctx context.Context,
-	robotID domain.RobotID,
-	applied domain.AppliedObservation,
+	id domain.RobotID,
+	fn func(robot *domain.Robot, log application.ObservationLog) error,
 ) error {
-	observation := applied.Observation
+	tx, err := repository.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
 
-	_, err := repository.db.ExecContext(
+	var lockedID string
+	err = tx.QueryRowContext(ctx, lockRobotQuery, string(id)).Scan(&lockedID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return application.ErrRobotNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("lock robot: %w", err)
+	}
+
+	// A separate statement after the lock, so it sees what the previous holder committed.
+	robot, err := scanRobot(tx.QueryRowContext(ctx, findRobotByIDQuery, string(id)))
+	if err != nil {
+		return fmt.Errorf("load locked robot: %w", err)
+	}
+
+	if err := fn(robot, &observationLog{tx: tx, robotID: id}); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+
+	return nil
+}
+
+type observationLog struct {
+	tx      *sql.Tx
+	robotID domain.RobotID
+}
+
+func (log *observationLog) Find(ctx context.Context, id domain.ObservationID) (domain.Observation, bool, error) {
+	var (
+		observationID  string
+		observedAt     time.Time
+		batteryPercent float64
+		positionX      float64
+		positionY      float64
+		operatingMode  string
+	)
+
+	err := log.tx.QueryRowContext(ctx, findObservationQuery, string(log.robotID), string(id)).
+		Scan(&observationID, &observedAt, &batteryPercent, &positionX, &positionY, &operatingMode)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Observation{}, false, nil
+	}
+	if err != nil {
+		return domain.Observation{}, false, fmt.Errorf("find observation: %w", err)
+	}
+
+	observation, err := observationFromRow(observationID, observedAt, batteryPercent, positionX, positionY, operatingMode)
+	if err != nil {
+		return domain.Observation{}, false, fmt.Errorf("corrupt stored observation %s: %w", observationID, err)
+	}
+
+	return observation, true, nil
+}
+
+func (log *observationLog) Add(
+	ctx context.Context,
+	observation domain.Observation,
+	receivedAt time.Time,
+	outcome domain.ObservationOutcome,
+) error {
+	_, err := log.tx.ExecContext(
 		ctx,
-		insertAppliedObservationQuery,
-		string(robotID),
+		insertObservationQuery,
+		string(log.robotID),
 		string(observation.ID()),
 		observation.ObservedAt(),
-		applied.ReceivedAt,
+		receivedAt,
 		// As text, so numeric(5,2) stores the exact two decimals.
 		observation.Battery().String(),
 		observation.Position().X(),
 		observation.Position().Y(),
 		string(observation.OperatingMode()),
+		string(outcome),
 	)
 	if err != nil {
-		return fmt.Errorf("insert applied observation: %w", err)
+		return fmt.Errorf("insert observation: %w", err)
 	}
 
 	return nil

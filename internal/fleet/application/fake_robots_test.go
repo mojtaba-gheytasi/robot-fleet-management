@@ -3,6 +3,7 @@ package application_test
 import (
 	"context"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,7 +18,15 @@ type fakeRobots struct {
 	createErr    error
 	createCalls  int
 	listedSiteID *domain.SiteID
-	added        []domain.AppliedObservation
+	added        []recordedObservation
+	mutex        sync.Mutex
+}
+
+type recordedObservation struct {
+	robotID     domain.RobotID
+	observation domain.Observation
+	receivedAt  time.Time
+	outcome     domain.ObservationOutcome
 }
 
 func newFakeRobots() *fakeRobots {
@@ -75,15 +84,57 @@ func (robots *fakeRobots) List(_ context.Context, siteID *domain.SiteID) ([]*dom
 	return listed, nil
 }
 
-func (robots *fakeRobots) AddAppliedObservation(
-	_ context.Context,
-	robotID domain.RobotID,
-	applied domain.AppliedObservation,
+func (robots *fakeRobots) WithLockedRobot(
+	ctx context.Context,
+	id domain.RobotID,
+	fn func(robot *domain.Robot, log application.ObservationLog) error,
 ) error {
-	robots.added = append(robots.added, applied)
+	robots.mutex.Lock()
+	defer robots.mutex.Unlock()
 
-	stored := robots.stored[robotID]
-	stored.ApplyObservation(applied.Observation, applied.ReceivedAt)
+	robot, err := robots.FindByID(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	log := &fakeObservationLog{robotID: id, robots: robots}
+	if err := fn(robot, log); err != nil {
+		return err
+	}
+
+	robots.added = append(robots.added, log.pending...)
+
+	return nil
+}
+
+type fakeObservationLog struct {
+	robotID domain.RobotID
+	robots  *fakeRobots
+	pending []recordedObservation
+}
+
+func (log *fakeObservationLog) Find(_ context.Context, id domain.ObservationID) (domain.Observation, bool, error) {
+	for _, recorded := range log.robots.added {
+		if recorded.robotID == log.robotID && recorded.observation.ID() == id {
+			return recorded.observation, true, nil
+		}
+	}
+
+	return domain.Observation{}, false, nil
+}
+
+func (log *fakeObservationLog) Add(
+	_ context.Context,
+	observation domain.Observation,
+	receivedAt time.Time,
+	outcome domain.ObservationOutcome,
+) error {
+	log.pending = append(log.pending, recordedObservation{
+		robotID:     log.robotID,
+		observation: observation,
+		receivedAt:  receivedAt,
+		outcome:     outcome,
+	})
 
 	return nil
 }
