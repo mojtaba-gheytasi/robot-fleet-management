@@ -46,17 +46,17 @@ func Run(ctx context.Context) error {
 		AlertCheckInterval: cfg.AlertCheckInterval,
 	})
 
-	alertCheckCtx, stopAlertCheck := context.WithCancel(ctx)
+	alertCheckCtx, cancelAlertCheck := context.WithCancel(ctx)
 	alertCheckDone := make(chan struct{})
 	go func() {
 		fleet.AlertCheck.Run(alertCheckCtx)
 		close(alertCheckDone)
 	}()
-	defer func() {
-		stopAlertCheck()
+	stopAlertCheck := func() {
+		cancelAlertCheck()
 		<-alertCheckDone
-		logger.Info("alert check stopped")
-	}()
+	}
+	defer stopAlertCheck()
 
 	logger.Info("alert check started", "interval", cfg.AlertCheckInterval.String())
 
@@ -84,6 +84,9 @@ func Run(ctx context.Context) error {
 	}
 
 	logger.Info("shutting down", "timeout", shutdownTimeout.String())
+
+	stopAlertCheck()
+	logger.Info("alert check stopped")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
