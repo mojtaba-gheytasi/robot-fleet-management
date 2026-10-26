@@ -178,7 +178,7 @@ func TestRobotRepositoryListsRobotsWithTheirLatestObservation(t *testing.T) {
 }
 
 // Tiny tables favour a sequential scan, so it is switched off to test the query shape.
-func TestQueriesUseThePartialIndexForTheCurrentObservation(t *testing.T) {
+func TestQueriesUseTheirIndexes(t *testing.T) {
 	ctx := context.Background()
 	db := startPostgres(t)
 
@@ -188,18 +188,22 @@ func TestQueriesUseThePartialIndexForTheCurrentObservation(t *testing.T) {
 	_, err = connection.ExecContext(ctx, `SET enable_seqscan = off`)
 	require.NoError(t, err)
 
+	const current, history = "telemetry_observations_current_idx", "telemetry_observations_history_idx"
 	queries := map[string]struct {
-		query string
-		arg   any
+		query     string
+		args      []any
+		wantIndex string
 	}{
-		"find by id":  {postgres.FindRobotByIDQuery, "robot-101"},
-		"list":        {postgres.ListRobotsQuery, nil},
-		"open alerts": {postgres.OpenLowBatteryAlertsQuery, registeredAt},
+		"find by id":    {postgres.FindRobotByIDQuery, []any{"robot-101"}, current},
+		"list":          {postgres.ListRobotsQuery, []any{nil}, current},
+		"open alerts":   {postgres.OpenLowBatteryAlertsQuery, []any{registeredAt}, current},
+		"fleet summary": {postgres.FleetSummaryQuery, []any{nil, registeredAt}, current},
+		"history":       {postgres.ObservationHistoryQuery, []any{"robot-101", 50}, history},
 	}
 
 	for name, tt := range queries {
 		t.Run(name, func(t *testing.T) {
-			rows, err := connection.QueryContext(ctx, "EXPLAIN "+tt.query, tt.arg)
+			rows, err := connection.QueryContext(ctx, "EXPLAIN "+tt.query, tt.args...)
 			require.NoError(t, err)
 			defer rows.Close()
 
@@ -211,7 +215,7 @@ func TestQueriesUseThePartialIndexForTheCurrentObservation(t *testing.T) {
 			}
 			require.NoError(t, rows.Err())
 
-			assert.Contains(t, plan.String(), "telemetry_observations_current_idx", plan.String())
+			assert.Contains(t, plan.String(), tt.wantIndex, plan.String())
 			assert.NotContains(t, plan.String(), "Seq Scan on telemetry_observations", plan.String())
 		})
 	}

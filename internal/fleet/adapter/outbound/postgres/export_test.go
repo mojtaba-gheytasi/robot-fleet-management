@@ -5,4 +5,6 @@ var (
 	ListRobotsQuery    = listRobotsQuery
 
 	OpenLowBatteryAlertsQuery = openLowBatteryAlertsQuery
+	FleetSummaryQuery         = fleetSummaryQuery
+	ObservationHistoryQuery   = observationHistoryQuery
 )

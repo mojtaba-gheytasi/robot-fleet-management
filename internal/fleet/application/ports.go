@@ -47,3 +47,10 @@ type AlertRepository interface {
 	// WithLockedAlert runs fn while the alert row is locked and saves the alert's changes with it.
 	WithLockedAlert(ctx context.Context, id domain.AlertID, fn func(alert *domain.Alert) error) error
 }
+
+type FleetReadRepository interface {
+	Summary(ctx context.Context, siteID *domain.SiteID, onlineSince time.Time) (FleetSummary, error)
+
+	// ObservationHistory returns ErrRobotNotFound for an unknown robot.
+	ObservationHistory(ctx context.Context, robotID domain.RobotID, limit int) ([]ObservationRecord, error)
+}

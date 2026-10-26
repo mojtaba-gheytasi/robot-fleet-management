@@ -8,7 +8,7 @@ import (
 const (
 	maxRobotIDLength = 64
 
-	onlineWindow = 10 * time.Second
+	OnlineWindow = 10 * time.Second
 	maxClockSkew = 5 * time.Second
 )
 
@@ -159,7 +159,7 @@ func (robot *Robot) ConnectivityAt(now time.Time) Connectivity {
 		return ConnectivityUnknown
 	}
 
-	if now.Sub(robot.latest.ReceivedAt) <= onlineWindow {
+	if now.Sub(robot.latest.ReceivedAt) <= OnlineWindow {
 		return ConnectivityOnline
 	}
 
