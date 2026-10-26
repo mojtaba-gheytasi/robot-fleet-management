@@ -33,6 +33,7 @@ func New(dependencies Dependencies) *Module {
 	})
 
 	robots := postgres.NewRobotRepository(dependencies.DB)
+	alerts := postgres.NewAlertRepository(dependencies.DB)
 
 	return &Module{
 		HTTPHandler: httpapi.NewHandler(httpapi.Config{
@@ -43,7 +44,8 @@ func New(dependencies Dependencies) *Module {
 
 			RecordTelemetry: application.NewRecordTelemetry(robots, clock),
 
-			ListAlerts: application.NewListAlerts(postgres.NewAlertRepository(dependencies.DB)),
+			ListAlerts:       application.NewListAlerts(alerts),
+			AcknowledgeAlert: application.NewAcknowledgeAlert(alerts, clock),
 		}),
 		AlertCheck: alertcheck.New(
 			application.NewReconcileAlerts(postgres.NewAlertReconciler(dependencies.DB), clock),

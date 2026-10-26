@@ -17,6 +17,8 @@ const (
 	codeInvalidObservation        = "INVALID_OBSERVATION"
 	codeObservationConflict       = "OBSERVATION_CONFLICT"
 	codeClockSkewExceeded         = "CLOCK_SKEW_EXCEEDED"
+	codeAlertNotFound             = "ALERT_NOT_FOUND"
+	codeAlertTerminal             = "ALERT_TERMINAL"
 	codeInternal                  = "INTERNAL"
 )
 
@@ -48,6 +50,10 @@ func respondUseCaseError(w http.ResponseWriter, r *http.Request, logger *slog.Lo
 			codeObservationConflict,
 			"this observation id was already used with different content",
 		)
+	case errors.Is(err, domain.ErrAlertTerminal):
+		respondError(w, http.StatusConflict, codeAlertTerminal, "the alert is resolved or closed and cannot be acknowledged")
+	case errors.Is(err, application.ErrAlertNotFound):
+		respondError(w, http.StatusNotFound, codeAlertNotFound, "the alert does not exist")
 	case errors.Is(err, application.ErrRobotNotFound):
 		respondError(w, http.StatusNotFound, codeRobotNotFound, "the robot does not exist")
 	case errors.Is(err, application.ErrSiteNotFound):

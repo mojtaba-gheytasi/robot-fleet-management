@@ -15,9 +15,14 @@ type ListAlertsUseCase interface {
 	Execute(ctx context.Context, query application.ListAlertsQuery) ([]*domain.Alert, error)
 }
 
+type AcknowledgeAlertUseCase interface {
+	Execute(ctx context.Context, alertID string) (*domain.Alert, error)
+}
+
 type alertHandler struct {
-	logger     *slog.Logger
-	listAlerts ListAlertsUseCase
+	logger           *slog.Logger
+	listAlerts       ListAlertsUseCase
+	acknowledgeAlert AcknowledgeAlertUseCase
 }
 
 type alertResponse struct {
@@ -68,6 +73,16 @@ func (handler *alertHandler) list(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, body)
+}
+
+func (handler *alertHandler) acknowledge(w http.ResponseWriter, r *http.Request) {
+	alert, err := handler.acknowledgeAlert.Execute(r.Context(), r.PathValue("id"))
+	if err != nil {
+		respondUseCaseError(w, r, handler.logger, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, alertResponseFrom(alert))
 }
 
 func alertResponseFrom(alert *domain.Alert) alertResponse {

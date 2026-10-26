@@ -110,3 +110,63 @@ func (useCase *fakeListAlerts) Execute(_ context.Context, query application.List
 
 	return useCase.alerts, useCase.err
 }
+
+func TestAcknowledgeAlertReturnsTheAcknowledgedAlert(t *testing.T) {
+	openedAt := time.Date(2026, time.October, 25, 15, 0, 0, 0, time.UTC)
+	acknowledgedAt := openedAt.Add(time.Minute)
+	alert, err := domain.ReconstituteAlert(
+		"alert-1", "robot-101", domain.AlertKindLowBattery,
+		domain.AlertStatusAcknowledged, openedAt, &acknowledgedAt, nil, "",
+	)
+	require.NoError(t, err)
+	useCase := &fakeAcknowledgeAlert{alert: alert}
+
+	response := serve(httpapi.Config{AcknowledgeAlert: useCase}, http.MethodPost, "/api/alerts/alert-1/acknowledge", "")
+
+	require.Equal(t, http.StatusOK, response.Code)
+	assert.Equal(t, "alert-1", useCase.alertID)
+	assert.JSONEq(t, `{
+		"id": "alert-1",
+		"robot_id": "robot-101",
+		"kind": "LOW_BATTERY",
+		"status": "ACKNOWLEDGED",
+		"opened_at": "2026-10-25T15:00:00Z",
+		"acknowledged_at": "2026-10-25T15:01:00Z",
+		"ended_at": null,
+		"closure_reason": null
+	}`, response.Body.String())
+}
+
+func TestAcknowledgeAlertMapsErrors(t *testing.T) {
+	tests := map[string]struct {
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		"unknown alert":    {application.ErrAlertNotFound, http.StatusNotFound, "ALERT_NOT_FOUND"},
+		"alert has ended":  {domain.ErrAlertTerminal, http.StatusConflict, "ALERT_TERMINAL"},
+		"unexpected fault": {errors.New("connection reset"), http.StatusInternalServerError, "INTERNAL"},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			response := serve(httpapi.Config{AcknowledgeAlert: &fakeAcknowledgeAlert{err: tt.err}}, http.MethodPost, "/api/alerts/alert-1/acknowledge", "")
+
+			assert.Equal(t, tt.wantStatus, response.Code)
+			assert.Equal(t, tt.wantCode, errorCode(t, response))
+			assert.NotContains(t, response.Body.String(), "connection reset")
+		})
+	}
+}
+
+type fakeAcknowledgeAlert struct {
+	alert   *domain.Alert
+	err     error
+	alertID string
+}
+
+func (useCase *fakeAcknowledgeAlert) Execute(_ context.Context, alertID string) (*domain.Alert, error) {
+	useCase.alertID = alertID
+
+	return useCase.alert, useCase.err
+}

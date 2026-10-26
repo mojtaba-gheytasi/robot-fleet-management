@@ -13,7 +13,8 @@ type Config struct {
 
 	RecordTelemetry RecordTelemetryUseCase
 
-	ListAlerts ListAlertsUseCase
+	ListAlerts       ListAlertsUseCase
+	AcknowledgeAlert AcknowledgeAlertUseCase
 }
 
 func NewHandler(config Config) http.Handler {
@@ -30,8 +31,9 @@ func NewHandler(config Config) http.Handler {
 	}
 
 	alerts := &alertHandler{
-		logger:     config.Logger,
-		listAlerts: config.ListAlerts,
+		logger:           config.Logger,
+		listAlerts:       config.ListAlerts,
+		acknowledgeAlert: config.AcknowledgeAlert,
 	}
 
 	mux := http.NewServeMux()
@@ -40,6 +42,7 @@ func NewHandler(config Config) http.Handler {
 	mux.HandleFunc("GET /api/robots/{id}", robots.get)
 	mux.HandleFunc("POST /api/robots/{id}/telemetry", telemetry.record)
 	mux.HandleFunc("GET /api/alerts", alerts.list)
+	mux.HandleFunc("POST /api/alerts/{id}/acknowledge", alerts.acknowledge)
 
 	return mux
 }
