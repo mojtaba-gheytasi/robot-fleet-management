@@ -42,6 +42,8 @@ func New(dependencies Dependencies) *Module {
 			ListRobots:    application.NewListRobots(robots, clock),
 
 			RecordTelemetry: application.NewRecordTelemetry(robots, clock),
+
+			ListAlerts: application.NewListAlerts(postgres.NewAlertRepository(dependencies.DB)),
 		}),
 		AlertCheck: alertcheck.New(
 			application.NewReconcileAlerts(postgres.NewAlertReconciler(dependencies.DB), clock),

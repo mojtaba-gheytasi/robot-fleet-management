@@ -37,3 +37,7 @@ type AlertReconciliation struct {
 	Opened   int
 	Resolved int
 }
+
+type AlertRepository interface {
+	List(ctx context.Context, terminal bool, limit int) ([]*domain.Alert, error)
+}
