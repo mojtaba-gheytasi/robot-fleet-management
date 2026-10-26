@@ -15,6 +15,8 @@ const (
 	codeSiteNotFound              = "SITE_NOT_FOUND"
 	codeRobotRegistrationConflict = "ROBOT_REGISTRATION_CONFLICT"
 	codeInvalidObservation        = "INVALID_OBSERVATION"
+	codeObservationConflict       = "OBSERVATION_CONFLICT"
+	codeClockSkewExceeded         = "CLOCK_SKEW_EXCEEDED"
 	codeInternal                  = "INTERNAL"
 )
 
@@ -37,6 +39,15 @@ func respondUseCaseError(w http.ResponseWriter, r *http.Request, logger *slog.Lo
 		respondError(w, http.StatusBadRequest, codeInvalidRequest, err.Error())
 	case errors.Is(err, domain.ErrInvalidObservation):
 		respondError(w, http.StatusUnprocessableEntity, codeInvalidObservation, err.Error())
+	case errors.Is(err, domain.ErrClockSkewExceeded):
+		respondError(w, http.StatusUnprocessableEntity, codeClockSkewExceeded, err.Error())
+	case errors.Is(err, domain.ErrObservationConflict):
+		respondError(
+			w,
+			http.StatusConflict,
+			codeObservationConflict,
+			"this observation id was already used with different content",
+		)
 	case errors.Is(err, application.ErrRobotNotFound):
 		respondError(w, http.StatusNotFound, codeRobotNotFound, "the robot does not exist")
 	case errors.Is(err, application.ErrSiteNotFound):

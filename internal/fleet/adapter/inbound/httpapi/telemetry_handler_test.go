@@ -42,6 +42,28 @@ func TestRecordTelemetryReturnsTheOutcome(t *testing.T) {
 	}, useCase.command)
 }
 
+func TestRecordTelemetryReturns200ForEveryOutcome(t *testing.T) {
+	outcomes := []application.TelemetryOutcome{
+		application.TelemetryOutcomeApplied,
+		application.TelemetryOutcomeSuperseded,
+		application.TelemetryOutcomeDuplicate,
+	}
+
+	for _, outcome := range outcomes {
+		t.Run(string(outcome), func(t *testing.T) {
+			useCase := &fakeRecordTelemetry{result: application.RecordTelemetryResult{Outcome: outcome}}
+
+			response := postTelemetry(useCase, validTelemetryBody)
+
+			require.Equal(t, http.StatusOK, response.Code)
+			assert.JSONEq(t,
+				`{"outcome": "`+string(outcome)+`", "robot_id": "robot-101", "observation_id": "obs-102"}`,
+				response.Body.String(),
+			)
+		})
+	}
+}
+
 func TestRecordTelemetryRejectsMissingFields(t *testing.T) {
 	tests := map[string]string{
 		"empty object":         `{}`,
@@ -71,6 +93,8 @@ func TestRecordTelemetryMapsUseCaseErrors(t *testing.T) {
 		wantCode   string
 	}{
 		"invalid observation": {domain.ErrInvalidObservation, http.StatusUnprocessableEntity, "INVALID_OBSERVATION"},
+		"reused id":           {domain.ErrObservationConflict, http.StatusConflict, "OBSERVATION_CONFLICT"},
+		"clock ahead":         {domain.ErrClockSkewExceeded, http.StatusUnprocessableEntity, "CLOCK_SKEW_EXCEEDED"},
 		"unknown robot":       {application.ErrRobotNotFound, http.StatusNotFound, "ROBOT_NOT_FOUND"},
 		"unexpected fault":    {errors.New("connection reset"), http.StatusInternalServerError, "INTERNAL"},
 	}
@@ -99,7 +123,8 @@ func TestGetRobotShowsTheLatestObservation(t *testing.T) {
 		domain.OperatingModeWorking,
 	)
 	require.NoError(t, err)
-	state.Robot.ApplyObservation(observation, time.Date(2026, time.October, 25, 14, 5, 1, 0, time.UTC))
+	_, err = state.Robot.ApplyObservation(observation, time.Date(2026, time.October, 25, 14, 5, 1, 0, time.UTC))
+	require.NoError(t, err)
 	state.Connectivity = domain.ConnectivityOnline
 
 	response := serve(httpapi.Config{GetRobot: &fakeGetRobot{state: state}}, http.MethodGet, "/api/robots/robot-101", "")
