@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/mojtaba-gheytasi/robot-fleet-management/internal/fleet/application"
@@ -52,14 +51,12 @@ func (handler *alertHandler) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if value := r.URL.Query().Get("limit"); value != "" {
-		limit, err := strconv.Atoi(value)
-		if err != nil || limit <= 0 {
-			respondError(w, http.StatusBadRequest, codeInvalidRequest, "limit must be a positive integer")
-			return
-		}
-		query.Limit = limit
+	limit, err := parseLimit(r)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, codeInvalidRequest, err.Error())
+		return
 	}
+	query.Limit = limit
 
 	alerts, err := handler.listAlerts.Execute(r.Context(), query)
 	if err != nil {

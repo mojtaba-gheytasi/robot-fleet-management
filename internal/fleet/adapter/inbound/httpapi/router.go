@@ -14,7 +14,9 @@ type Config struct {
 	DeactivateRobot ChangeLifecycleUseCase
 	ActivateRobot   ChangeLifecycleUseCase
 
-	RecordTelemetry RecordTelemetryUseCase
+	RecordTelemetry       RecordTelemetryUseCase
+	GetObservationHistory GetObservationHistoryUseCase
+	GetFleetSummary       GetFleetSummaryUseCase
 
 	ListAlerts       ListAlertsUseCase
 	AcknowledgeAlert AcknowledgeAlertUseCase
@@ -34,6 +36,12 @@ func NewHandler(config Config) http.Handler {
 	telemetry := &telemetryHandler{
 		logger:          config.Logger,
 		recordTelemetry: config.RecordTelemetry,
+		history:         config.GetObservationHistory,
+	}
+
+	fleet := &fleetHandler{
+		logger:  config.Logger,
+		summary: config.GetFleetSummary,
 	}
 
 	alerts := &alertHandler{
@@ -49,6 +57,8 @@ func NewHandler(config Config) http.Handler {
 	mux.HandleFunc("POST /api/robots/{id}/deactivate", robots.deactivate)
 	mux.HandleFunc("POST /api/robots/{id}/activate", robots.activate)
 	mux.HandleFunc("POST /api/robots/{id}/telemetry", telemetry.record)
+	mux.HandleFunc("GET /api/robots/{id}/telemetry", telemetry.list)
+	mux.HandleFunc("GET /api/fleet/summary", fleet.getSummary)
 	mux.HandleFunc("GET /api/alerts", alerts.list)
 	mux.HandleFunc("POST /api/alerts/{id}/acknowledge", alerts.acknowledge)
 

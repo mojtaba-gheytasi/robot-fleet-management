@@ -14,9 +14,29 @@ type RecordTelemetryUseCase interface {
 	Execute(ctx context.Context, command application.RecordTelemetryCommand) (application.RecordTelemetryResult, error)
 }
 
+type GetObservationHistoryUseCase interface {
+	Execute(ctx context.Context, query application.GetObservationHistoryQuery) ([]application.ObservationRecord, error)
+}
+
 type telemetryHandler struct {
 	logger          *slog.Logger
 	recordTelemetry RecordTelemetryUseCase
+	history         GetObservationHistoryUseCase
+}
+
+type observationHistoryResponse struct {
+	RobotID      string                 `json:"robot_id"`
+	Observations []historyEntryResponse `json:"observations"`
+}
+
+type historyEntryResponse struct {
+	ObservationID  string           `json:"observation_id"`
+	ObservedAt     time.Time        `json:"observed_at"`
+	ReceivedAt     time.Time        `json:"received_at"`
+	BatteryPercent float64          `json:"battery_percent"`
+	Position       positionResponse `json:"position"`
+	OperatingMode  string           `json:"operating_mode"`
+	Outcome        string           `json:"outcome"`
 }
 
 // Pointers, so a missing battery_percent is not read as 0%.
@@ -77,6 +97,36 @@ func (handler *telemetryHandler) record(w http.ResponseWriter, r *http.Request) 
 		RobotID:       command.RobotID,
 		ObservationID: command.ObservationID,
 	})
+}
+
+func (handler *telemetryHandler) list(w http.ResponseWriter, r *http.Request) {
+	limit, err := parseLimit(r)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, codeInvalidRequest, err.Error())
+		return
+	}
+
+	robotID := r.PathValue("id")
+	records, err := handler.history.Execute(r.Context(), application.GetObservationHistoryQuery{RobotID: robotID, Limit: limit})
+	if err != nil {
+		respondUseCaseError(w, r, handler.logger, err)
+		return
+	}
+
+	body := observationHistoryResponse{RobotID: robotID, Observations: make([]historyEntryResponse, 0, len(records))}
+	for _, record := range records {
+		body.Observations = append(body.Observations, historyEntryResponse{
+			ObservationID:  record.ObservationID,
+			ObservedAt:     record.ObservedAt.UTC(),
+			ReceivedAt:     record.ReceivedAt.UTC(),
+			BatteryPercent: record.BatteryPercent,
+			Position:       positionResponse{X: record.PositionX, Y: record.PositionY},
+			OperatingMode:  record.OperatingMode,
+			Outcome:        record.Outcome,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (request recordTelemetryRequest) missingFields() []string {
