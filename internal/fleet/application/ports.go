@@ -16,6 +16,11 @@ type RobotRepository interface {
 
 	// List returns robots ordered by ID; a nil siteID means every site.
 	List(ctx context.Context, siteID *domain.SiteID) ([]*domain.Robot, error)
+
+	// AddAppliedObservation records an observation that became the robot's
+	// current state. History and current state are the same rows, so this
+	// one insert updates both.
+	AddAppliedObservation(ctx context.Context, robotID domain.RobotID, applied domain.AppliedObservation) error
 }
 
 type Clock func() time.Time

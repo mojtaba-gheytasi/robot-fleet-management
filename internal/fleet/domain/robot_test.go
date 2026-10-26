@@ -60,14 +60,72 @@ func TestNewRobotRejectsInvalidRegistrations(t *testing.T) {
 }
 
 func TestReconstituteRobotKeepsStoredLifecycle(t *testing.T) {
-	robot, err := domain.ReconstituteRobot("robot-101", "site-north", domain.LifecycleInactive, now)
+	robot, err := domain.ReconstituteRobot("robot-101", "site-north", domain.LifecycleInactive, now, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, domain.LifecycleInactive, robot.Lifecycle())
 }
 
 func TestReconstituteRobotRejectsUnknownLifecycle(t *testing.T) {
-	_, err := domain.ReconstituteRobot("robot-101", "site-north", "PAUSED", now)
+	_, err := domain.ReconstituteRobot("robot-101", "site-north", "PAUSED", now, nil)
 
 	require.ErrorIs(t, err, domain.ErrInvalidRobot)
+}
+
+func TestApplyObservationBecomesTheCurrentState(t *testing.T) {
+	robot, err := domain.NewRobot("robot-101", "site-north", now)
+	require.NoError(t, err)
+	observation := newObservation(t, "obs-1", now, 18.5)
+
+	applied := robot.ApplyObservation(observation, now.Add(time.Second))
+
+	latest, ok := robot.LatestObservation()
+	require.True(t, ok)
+	assert.Equal(t, applied, latest)
+	assert.Equal(t, observation, latest.Observation)
+	assert.Equal(t, now.Add(time.Second), latest.ReceivedAt)
+}
+
+func TestNewRobotHasNoLatestObservation(t *testing.T) {
+	robot, err := domain.NewRobot("robot-101", "site-north", now)
+	require.NoError(t, err)
+
+	_, ok := robot.LatestObservation()
+
+	assert.False(t, ok)
+}
+
+func TestConnectivityFollowsTheReceiptTimeOfTheLatestObservation(t *testing.T) {
+	receivedAt := now.Add(time.Minute)
+	tests := map[string]struct {
+		readAt time.Time
+		want   domain.Connectivity
+	}{
+		"just received":        {receivedAt, domain.ConnectivityOnline},
+		"exactly 10 s later":   {receivedAt.Add(10 * time.Second), domain.ConnectivityOnline},
+		"just over 10 s later": {receivedAt.Add(10*time.Second + time.Nanosecond), domain.ConnectivityStale},
+		"a long time later":    {receivedAt.Add(time.Hour), domain.ConnectivityStale},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			robot, err := domain.NewRobot("robot-101", "site-north", now)
+			require.NoError(t, err)
+			// The robot clock is far behind: connectivity must not care.
+			robot.ApplyObservation(newObservation(t, "obs-1", now.Add(-time.Hour), 50), receivedAt)
+
+			assert.Equal(t, tt.want, robot.ConnectivityAt(tt.readAt))
+		})
+	}
+}
+
+func TestReconstituteRobotKeepsTheLatestObservation(t *testing.T) {
+	latest := domain.AppliedObservation{Observation: newObservation(t, "obs-1", now, 50), ReceivedAt: now}
+
+	robot, err := domain.ReconstituteRobot("robot-101", "site-north", domain.LifecycleActive, now, &latest)
+	require.NoError(t, err)
+
+	stored, ok := robot.LatestObservation()
+	require.True(t, ok)
+	assert.Equal(t, latest, stored)
 }

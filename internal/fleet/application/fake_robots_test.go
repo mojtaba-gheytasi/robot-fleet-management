@@ -17,6 +17,7 @@ type fakeRobots struct {
 	createErr    error
 	createCalls  int
 	listedSiteID *domain.SiteID
+	added        []domain.AppliedObservation
 }
 
 func newFakeRobots() *fakeRobots {
@@ -32,7 +33,7 @@ func (robots *fakeRobots) store(
 ) {
 	t.Helper()
 
-	robot, err := domain.ReconstituteRobot(id, siteID, lifecycle, registeredAt)
+	robot, err := domain.ReconstituteRobot(id, siteID, lifecycle, registeredAt, nil)
 	require.NoError(t, err)
 	robots.stored[id] = robot
 }
@@ -72,4 +73,18 @@ func (robots *fakeRobots) List(_ context.Context, siteID *domain.SiteID) ([]*dom
 	sort.Slice(listed, func(i, j int) bool { return listed[i].ID() < listed[j].ID() })
 
 	return listed, nil
+}
+
+func (robots *fakeRobots) AddAppliedObservation(
+	_ context.Context,
+	robotID domain.RobotID,
+	applied domain.AppliedObservation,
+) error {
+	robots.added = append(robots.added, applied)
+
+	// Keep the stored robot in step, as the real table would.
+	stored := robots.stored[robotID]
+	stored.ApplyObservation(applied.Observation, applied.ReceivedAt)
+
+	return nil
 }

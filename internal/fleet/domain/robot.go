@@ -5,7 +5,13 @@ import (
 	"time"
 )
 
-const maxRobotIDLength = 64
+const (
+	maxRobotIDLength = 64
+
+	// A robot is ONLINE while its last applied observation was received no
+	// more than this long ago (HLT-04).
+	onlineWindow = 10 * time.Second
+)
 
 type RobotID string
 type SiteID string
@@ -23,13 +29,22 @@ const BatteryHealthUnknown BatteryHealth = "UNKNOWN"
 
 type Connectivity string
 
-const ConnectivityUnknown Connectivity = "UNKNOWN"
+const (
+	ConnectivityUnknown Connectivity = "UNKNOWN"
+	ConnectivityOnline  Connectivity = "ONLINE"
+	ConnectivityStale   Connectivity = "STALE"
+)
 
 type Robot struct {
 	id           RobotID
 	siteID       SiteID
 	lifecycle    Lifecycle
 	registeredAt time.Time
+
+	// latest is the current state: the newest applied observation, or nil
+	// before the robot has reported. History is stored separately and is not
+	// part of the aggregate, so it stays small however long the robot runs.
+	latest *AppliedObservation
 }
 
 // NewRobot registers a robot at a site. A new robot starts ACTIVE (REG-03).
@@ -54,12 +69,14 @@ func ReconstituteRobot(
 	siteID SiteID,
 	lifecycle Lifecycle,
 	registeredAt time.Time,
+	latest *AppliedObservation,
 ) (*Robot, error) {
 	robot := &Robot{
 		id:           id,
 		siteID:       siteID,
 		lifecycle:    lifecycle,
 		registeredAt: registeredAt,
+		latest:       latest,
 	}
 
 	if err := robot.validate(); err != nil {
@@ -85,16 +102,43 @@ func (robot *Robot) RegisteredAt() time.Time {
 	return robot.registeredAt
 }
 
-// BatteryHealth is UNKNOWN until an observation is applied (HLT-01).
+// LatestObservation returns the current state, and false before the robot
+// has reported.
+func (robot *Robot) LatestObservation() (AppliedObservation, bool) {
+	if robot.latest == nil {
+		return AppliedObservation{}, false
+	}
+
+	return *robot.latest, true
+}
+
+// ApplyObservation makes the observation the robot's current state.
+func (robot *Robot) ApplyObservation(observation Observation, receivedAt time.Time) AppliedObservation {
+	applied := AppliedObservation{Observation: observation, ReceivedAt: receivedAt}
+	robot.latest = &applied
+
+	return applied
+}
+
+// BatteryHealth stays UNKNOWN until battery health is classified from applied
+// observations (HLT-01 to HLT-03).
 func (robot *Robot) BatteryHealth() BatteryHealth {
 	return BatteryHealthUnknown
 }
 
-// ConnectivityAt is UNKNOWN until an observation is applied (HLT-04). It
-// takes the time of reading because connectivity is never stored: the same
-// robot is ONLINE now and STALE ten seconds later without any write.
+// ConnectivityAt takes the time of reading because connectivity is never
+// stored: the same robot is ONLINE now and STALE ten seconds later without
+// any write. It uses the server's receipt time, not the robot's clock.
 func (robot *Robot) ConnectivityAt(now time.Time) Connectivity {
-	return ConnectivityUnknown
+	if robot.latest == nil {
+		return ConnectivityUnknown
+	}
+
+	if now.Sub(robot.latest.ReceivedAt) <= onlineWindow {
+		return ConnectivityOnline
+	}
+
+	return ConnectivityStale
 }
 
 func (robot *Robot) validate() error {
