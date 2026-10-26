@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mojtaba-gheytasi/robot-fleet-management/internal/fleet/application"
+	"github.com/mojtaba-gheytasi/robot-fleet-management/internal/fleet/domain"
 )
 
 // The use case interfaces are declared here, where they are used, so handler
@@ -47,7 +48,21 @@ type robotResponse struct {
 
 // observationResponse is the robot's latest applied observation. It is null
 // until the robot reports one, rather than filled with made-up values (VIS-06).
-type observationResponse struct{}
+// Both times are shown: observed_at is when the robot measured, received_at
+// is when the server got it.
+type observationResponse struct {
+	ObservationID  string           `json:"observation_id"`
+	ObservedAt     time.Time        `json:"observed_at"`
+	ReceivedAt     time.Time        `json:"received_at"`
+	BatteryPercent float64          `json:"battery_percent"`
+	Position       positionResponse `json:"position"`
+	OperatingMode  string           `json:"operating_mode"`
+}
+
+type positionResponse struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
 
 type robotListResponse struct {
 	Robots []robotResponse `json:"robots"`
@@ -118,6 +133,27 @@ func robotResponseFrom(state application.RobotState) robotResponse {
 		RegisteredAt:      robot.RegisteredAt().UTC(),
 		BatteryHealth:     string(robot.BatteryHealth()),
 		Connectivity:      string(state.Connectivity),
-		LatestObservation: nil,
+		LatestObservation: latestObservationResponseFrom(robot),
+	}
+}
+
+func latestObservationResponseFrom(robot *domain.Robot) *observationResponse {
+	latest, ok := robot.LatestObservation()
+	if ok == false {
+		return nil
+	}
+
+	observation := latest.Observation
+
+	return &observationResponse{
+		ObservationID:  string(observation.ID()),
+		ObservedAt:     observation.ObservedAt().UTC(),
+		ReceivedAt:     latest.ReceivedAt.UTC(),
+		BatteryPercent: observation.Battery().Percent(),
+		Position: positionResponse{
+			X: observation.Position().X(),
+			Y: observation.Position().Y(),
+		},
+		OperatingMode: string(observation.OperatingMode()),
 	}
 }

@@ -14,6 +14,7 @@ const (
 	codeRobotNotFound             = "ROBOT_NOT_FOUND"
 	codeSiteNotFound              = "SITE_NOT_FOUND"
 	codeRobotRegistrationConflict = "ROBOT_REGISTRATION_CONFLICT"
+	codeInvalidObservation        = "INVALID_OBSERVATION"
 	codeInternal                  = "INTERNAL"
 )
 
@@ -37,6 +38,8 @@ func respondUseCaseError(w http.ResponseWriter, r *http.Request, logger *slog.Lo
 	switch {
 	case errors.Is(err, domain.ErrInvalidRobot):
 		respondError(w, http.StatusBadRequest, codeInvalidRequest, err.Error())
+	case errors.Is(err, domain.ErrInvalidObservation):
+		respondError(w, http.StatusUnprocessableEntity, codeInvalidObservation, err.Error())
 	case errors.Is(err, application.ErrRobotNotFound):
 		respondError(w, http.StatusNotFound, codeRobotNotFound, "the robot does not exist")
 	case errors.Is(err, application.ErrSiteNotFound):

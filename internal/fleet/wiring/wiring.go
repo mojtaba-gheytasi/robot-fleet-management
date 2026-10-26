@@ -38,6 +38,8 @@ func New(dependencies Dependencies) *Module {
 			RegisterRobot: application.NewRegisterRobot(robots, clock),
 			GetRobot:      application.NewGetRobot(robots, clock),
 			ListRobots:    application.NewListRobots(robots, clock),
+
+			RecordTelemetry: application.NewRecordTelemetry(robots, clock),
 		}),
 	}
 }
