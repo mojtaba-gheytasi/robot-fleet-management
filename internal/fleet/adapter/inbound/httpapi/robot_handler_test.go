@@ -1,0 +1,151 @@
+package httpapi_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/mojtaba-gheytasi/robot-fleet-management/internal/fleet/adapter/inbound/httpapi"
+	"github.com/mojtaba-gheytasi/robot-fleet-management/internal/fleet/application"
+	"github.com/mojtaba-gheytasi/robot-fleet-management/internal/fleet/domain"
+)
+
+const validBody = `{"id": "robot-101", "site_id": "site-north"}`
+
+func TestRegisterRobotReturns201WithTheNewRobot(t *testing.T) {
+	useCase := &fakeRegisterRobot{result: application.RegisterRobotResult{Robot: testRobot(t), Created: true}}
+
+	response := postRobot(t, useCase, validBody)
+
+	require.Equal(t, http.StatusCreated, response.Code)
+	assert.Equal(t, "application/json", response.Header().Get("Content-Type"))
+	assert.JSONEq(t, `{
+		"id": "robot-101",
+		"site_id": "site-north",
+		"lifecycle": "ACTIVE",
+		"registered_at": "2026-10-25T14:00:00Z"
+	}`, response.Body.String())
+	assert.Equal(t, application.RegisterRobotCommand{RobotID: "robot-101", SiteID: "site-north"}, useCase.command)
+}
+
+func TestRegisterRobotReturns200OnIdenticalRetry(t *testing.T) {
+	useCase := &fakeRegisterRobot{result: application.RegisterRobotResult{Robot: testRobot(t), Created: false}}
+
+	response := postRobot(t, useCase, validBody)
+
+	assert.Equal(t, http.StatusOK, response.Code)
+}
+
+func TestRegisterRobotMapsUseCaseErrors(t *testing.T) {
+	tests := map[string]struct {
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		"invalid robot":    {domain.ErrInvalidRobot, http.StatusBadRequest, "INVALID_REQUEST"},
+		"unknown site":     {application.ErrSiteNotFound, http.StatusNotFound, "SITE_NOT_FOUND"},
+		"different data":   {application.ErrRobotRegistrationConflict, http.StatusConflict, "ROBOT_REGISTRATION_CONFLICT"},
+		"unexpected fault": {errors.New("connection reset"), http.StatusInternalServerError, "INTERNAL"},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			response := postRobot(t, &fakeRegisterRobot{err: tt.err}, validBody)
+
+			assert.Equal(t, tt.wantStatus, response.Code)
+			assert.Equal(t, tt.wantCode, errorCode(t, response))
+		})
+	}
+}
+
+func TestRegisterRobotDoesNotExposeInternalErrors(t *testing.T) {
+	response := postRobot(t, &fakeRegisterRobot{err: errors.New("connection reset")}, validBody)
+
+	assert.NotContains(t, response.Body.String(), "connection reset")
+}
+
+func TestRegisterRobotRejectsMalformedBodies(t *testing.T) {
+	tests := map[string]string{
+		"not JSON":        `robot-101`,
+		"unknown field":   `{"id": "robot-101", "site_id": "site-north", "name": "Rob"}`,
+		"wrong type":      `{"id": 101, "site_id": "site-north"}`,
+		"trailing data":   validBody + `{}`,
+		"empty body":      ``,
+		"body over limit": `{"id": "` + strings.Repeat("r", 70<<10) + `"}`,
+	}
+
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			useCase := &fakeRegisterRobot{}
+
+			response := postRobot(t, useCase, body)
+
+			assert.Equal(t, http.StatusBadRequest, response.Code)
+			assert.Equal(t, "INVALID_REQUEST", errorCode(t, response))
+			assert.False(t, useCase.called, "a malformed body never reaches the use case")
+		})
+	}
+}
+
+func postRobot(t *testing.T, useCase *fakeRegisterRobot, body string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	handler := httpapi.NewHandler(httpapi.Config{
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		RegisterRobot: useCase,
+	})
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/robots", strings.NewReader(body)))
+
+	return response
+}
+
+func errorCode(t *testing.T, response *httptest.ResponseRecorder) string {
+	t.Helper()
+
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
+
+	return body.Error.Code
+}
+
+func testRobot(t *testing.T) *domain.Robot {
+	t.Helper()
+
+	robot, err := domain.NewRobot("robot-101", "site-north", time.Date(2026, time.October, 25, 14, 0, 0, 0, time.UTC))
+	require.NoError(t, err)
+
+	return robot
+}
+
+type fakeRegisterRobot struct {
+	result  application.RegisterRobotResult
+	err     error
+	called  bool
+	command application.RegisterRobotCommand
+}
+
+func (useCase *fakeRegisterRobot) Execute(
+	_ context.Context,
+	command application.RegisterRobotCommand,
+) (application.RegisterRobotResult, error) {
+	useCase.called = true
+	useCase.command = command
+
+	return useCase.result, useCase.err
+}

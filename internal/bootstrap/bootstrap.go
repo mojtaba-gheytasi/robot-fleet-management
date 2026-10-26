@@ -1,5 +1,6 @@
 // Package bootstrap builds the running process: configuration, logger,
-// database and HTTP server, and shuts them down in order on SIGINT or SIGTERM.
+// database, the fleet module and the HTTP server, and shuts them down in
+// order on SIGINT or SIGTERM.
 package bootstrap
 
 import (
@@ -14,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mojtaba-gheytasi/robot-fleet-management/internal/fleet/wiring"
 	"github.com/mojtaba-gheytasi/robot-fleet-management/internal/platform/config"
 	"github.com/mojtaba-gheytasi/robot-fleet-management/internal/platform/database"
 	"github.com/mojtaba-gheytasi/robot-fleet-management/internal/platform/httpserver"
@@ -40,8 +42,15 @@ func Run(ctx context.Context) error {
 
 	logger.Info("connected to PostgreSQL")
 
+	fleet := wiring.New(wiring.Dependencies{
+		DB:     db,
+		Logger: logger,
+		Clock:  func() time.Time { return time.Now().UTC() },
+	})
+
 	mux := http.NewServeMux()
 	httpserver.RegisterHealth(mux, db)
+	mux.Handle("/api/", fleet.HTTPHandler)
 	server := httpserver.New(mux)
 
 	// Listen before serving, so a bad or busy address fails here with a clear
