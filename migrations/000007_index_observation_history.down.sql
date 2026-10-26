@@ -1,0 +1,1 @@
+DROP INDEX telemetry_observations_history_idx;
