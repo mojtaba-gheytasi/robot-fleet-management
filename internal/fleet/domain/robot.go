@@ -17,6 +17,14 @@ const (
 	LifecycleInactive Lifecycle = "INACTIVE"
 )
 
+type BatteryHealth string
+
+const BatteryHealthUnknown BatteryHealth = "UNKNOWN"
+
+type Connectivity string
+
+const ConnectivityUnknown Connectivity = "UNKNOWN"
+
 type Robot struct {
 	id           RobotID
 	siteID       SiteID
@@ -75,6 +83,18 @@ func (robot *Robot) Lifecycle() Lifecycle {
 
 func (robot *Robot) RegisteredAt() time.Time {
 	return robot.registeredAt
+}
+
+// BatteryHealth is UNKNOWN until an observation is applied (HLT-01).
+func (robot *Robot) BatteryHealth() BatteryHealth {
+	return BatteryHealthUnknown
+}
+
+// ConnectivityAt is UNKNOWN until an observation is applied (HLT-04). It
+// takes the time of reading because connectivity is never stored: the same
+// robot is ONLINE now and STALE ten seconds later without any write.
+func (robot *Robot) ConnectivityAt(now time.Time) Connectivity {
+	return ConnectivityUnknown
 }
 
 func (robot *Robot) validate() error {

@@ -23,6 +23,14 @@ func TestNewRobotStartsActive(t *testing.T) {
 	assert.Equal(t, now, robot.RegisteredAt())
 }
 
+func TestNewRobotHasUnknownHealthAndConnectivity(t *testing.T) {
+	robot, err := domain.NewRobot("robot-101", "site-north", now)
+	require.NoError(t, err)
+
+	assert.Equal(t, domain.BatteryHealthUnknown, robot.BatteryHealth())
+	assert.Equal(t, domain.ConnectivityUnknown, robot.ConnectivityAt(now.Add(time.Hour)))
+}
+
 func TestNewRobotAcceptsEveryAllowedIDCharacter(t *testing.T) {
 	_, err := domain.NewRobot("Robot_1.a-2", "site-north", now)
 
