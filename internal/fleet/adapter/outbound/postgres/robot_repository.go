@@ -15,8 +15,8 @@ import (
 
 const (
 	insertRobotQuery = `
-		INSERT INTO robots (id, site_id, lifecycle, created_at)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO robots (id, site_id, lifecycle, created_at, activated_at)
+		VALUES ($1, $2, $3, $4, $4)
 		ON CONFLICT (id) DO NOTHING`
 
 	// Shaped so the partial index answers the lateral lookup; see the EXPLAIN test.
