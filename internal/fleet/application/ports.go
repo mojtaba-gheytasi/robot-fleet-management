@@ -26,3 +26,14 @@ type ObservationLog interface {
 }
 
 type Clock func() time.Time
+
+type AlertReconciler interface {
+	Reconcile(ctx context.Context, now time.Time) (AlertReconciliation, error)
+}
+
+type AlertReconciliation struct {
+	// Skipped means another copy of the service was already running the check.
+	Skipped  bool
+	Opened   int
+	Resolved int
+}

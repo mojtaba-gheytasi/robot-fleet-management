@@ -6,19 +6,24 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/mojtaba-gheytasi/robot-fleet-management/internal/fleet/adapter/inbound/alertcheck"
 	"github.com/mojtaba-gheytasi/robot-fleet-management/internal/fleet/adapter/inbound/httpapi"
 	"github.com/mojtaba-gheytasi/robot-fleet-management/internal/fleet/adapter/outbound/postgres"
 	"github.com/mojtaba-gheytasi/robot-fleet-management/internal/fleet/application"
 )
 
 type Dependencies struct {
-	DB     *sql.DB
-	Logger *slog.Logger
-	Clock  func() time.Time
+	DB                 *sql.DB
+	Logger             *slog.Logger
+	Clock              func() time.Time
+	AlertCheckInterval time.Duration
 }
 
 type Module struct {
 	HTTPHandler http.Handler
+
+	// AlertCheck must be stopped before the database is closed.
+	AlertCheck *alertcheck.AlertCheck
 }
 
 func New(dependencies Dependencies) *Module {
@@ -38,5 +43,10 @@ func New(dependencies Dependencies) *Module {
 
 			RecordTelemetry: application.NewRecordTelemetry(robots, clock),
 		}),
+		AlertCheck: alertcheck.New(
+			application.NewReconcileAlerts(postgres.NewAlertReconciler(dependencies.DB), clock),
+			dependencies.AlertCheckInterval,
+			dependencies.Logger,
+		),
 	}
 }

@@ -2,14 +2,20 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"strings"
+	"time"
 )
 
-const defaultHTTPServerAddress = "127.0.0.1:8080"
+const (
+	defaultHTTPServerAddress  = "127.0.0.1:8080"
+	defaultAlertCheckInterval = 5 * time.Second
+)
 
 type Config struct {
-	DatabaseURL       string
-	HTTPServerAddress string
+	DatabaseURL        string
+	HTTPServerAddress  string
+	AlertCheckInterval time.Duration
 }
 
 func Load(getenv func(string) string) (Config, error) {
@@ -24,6 +30,15 @@ func Load(getenv func(string) string) (Config, error) {
 
 	if cfg.HTTPServerAddress == "" {
 		cfg.HTTPServerAddress = defaultHTTPServerAddress
+	}
+
+	cfg.AlertCheckInterval = defaultAlertCheckInterval
+	if value := strings.TrimSpace(getenv("ALERT_CHECK_INTERVAL")); value != "" {
+		interval, err := time.ParseDuration(value)
+		if err != nil || interval <= 0 {
+			return Config{}, fmt.Errorf("ALERT_CHECK_INTERVAL must be a positive duration such as 5s, got %q", value)
+		}
+		cfg.AlertCheckInterval = interval
 	}
 
 	return cfg, nil
