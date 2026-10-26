@@ -14,7 +14,7 @@ type RegisterRobotCommand struct {
 }
 
 type RegisterRobotResult struct {
-	Robot   *domain.Robot
+	RobotState
 	Created bool
 }
 
@@ -42,7 +42,7 @@ func (useCase *RegisterRobot) Execute(
 
 	err = useCase.robots.Create(ctx, robot)
 	if err == nil {
-		return RegisterRobotResult{Robot: robot, Created: true}, nil
+		return RegisterRobotResult{RobotState: robotStateAt(robot, useCase.clock()), Created: true}, nil
 	}
 	if errors.Is(err, ErrRobotAlreadyExists) == false {
 		return RegisterRobotResult{}, fmt.Errorf("create robot: %w", err)
@@ -60,5 +60,5 @@ func (useCase *RegisterRobot) Execute(
 		return RegisterRobotResult{}, ErrRobotRegistrationConflict
 	}
 
-	return RegisterRobotResult{Robot: existing, Created: false}, nil
+	return RegisterRobotResult{RobotState: robotStateAt(existing, useCase.clock()), Created: false}, nil
 }

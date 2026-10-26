@@ -36,6 +36,8 @@ func New(dependencies Dependencies) *Module {
 		HTTPHandler: httpapi.NewHandler(httpapi.Config{
 			Logger:        dependencies.Logger,
 			RegisterRobot: application.NewRegisterRobot(robots, clock),
+			GetRobot:      application.NewGetRobot(robots, clock),
+			ListRobots:    application.NewListRobots(robots, clock),
 		}),
 	}
 }

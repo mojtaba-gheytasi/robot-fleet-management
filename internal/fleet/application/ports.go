@@ -13,6 +13,9 @@ type RobotRepository interface {
 	// the site does not exist.
 	Create(ctx context.Context, robot *domain.Robot) error
 	FindByID(ctx context.Context, id domain.RobotID) (*domain.Robot, error)
+
+	// List returns robots ordered by ID; a nil siteID means every site.
+	List(ctx context.Context, siteID *domain.SiteID) ([]*domain.Robot, error)
 }
 
 type Clock func() time.Time
