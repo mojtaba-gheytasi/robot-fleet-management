@@ -22,7 +22,7 @@ const (
 	// Shaped so the partial index answers the lateral lookup; see the EXPLAIN test.
 	selectRobotsQuery = `
 		SELECT
-			r.id, r.site_id, r.lifecycle, r.created_at,
+			r.id, r.site_id, r.lifecycle, r.created_at, r.battery_health,
 			o.observation_id, o.observed_at, o.received_at,
 			o.battery_percent, o.position_x, o.position_y, o.operating_mode
 		FROM robots r
@@ -44,6 +44,9 @@ const (
 
 	lockRobotQuery = `
 		SELECT id FROM robots WHERE id = $1 FOR UPDATE`
+
+	updateBatteryHealthQuery = `
+		UPDATE robots SET battery_health = $2 WHERE id = $1`
 
 	findObservationQuery = `
 		SELECT observation_id, observed_at, battery_percent, position_x, position_y, operating_mode
@@ -167,8 +170,16 @@ func (repository *RobotRepository) WithLockedRobot(
 		return fmt.Errorf("load locked robot: %w", err)
 	}
 
+	loadedHealth := robot.BatteryHealth()
+
 	if err := fn(robot, &observationLog{tx: tx, robotID: id}); err != nil {
 		return err
+	}
+
+	if robot.BatteryHealth() != loadedHealth {
+		if _, err := tx.ExecContext(ctx, updateBatteryHealthQuery, string(id), string(robot.BatteryHealth())); err != nil {
+			return fmt.Errorf("update battery health: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -243,10 +254,11 @@ type rowScanner interface {
 
 func scanRobot(row rowScanner) (*domain.Robot, error) {
 	var (
-		robotID      string
-		siteID       string
-		lifecycle    string
-		registeredAt time.Time
+		robotID       string
+		siteID        string
+		lifecycle     string
+		registeredAt  time.Time
+		batteryHealth string
 
 		observationID  sql.NullString
 		observedAt     sql.NullTime
@@ -258,7 +270,7 @@ func scanRobot(row rowScanner) (*domain.Robot, error) {
 	)
 
 	if err := row.Scan(
-		&robotID, &siteID, &lifecycle, &registeredAt,
+		&robotID, &siteID, &lifecycle, &registeredAt, &batteryHealth,
 		&observationID, &observedAt, &receivedAt,
 		&batteryPercent, &positionX, &positionY, &operatingMode,
 	); err != nil {
@@ -287,6 +299,7 @@ func scanRobot(row rowScanner) (*domain.Robot, error) {
 		domain.SiteID(siteID),
 		domain.Lifecycle(lifecycle),
 		registeredAt,
+		domain.BatteryHealth(batteryHealth),
 		latest,
 	)
 	if err != nil {

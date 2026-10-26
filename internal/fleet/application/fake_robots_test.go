@@ -42,7 +42,7 @@ func (robots *fakeRobots) store(
 ) {
 	t.Helper()
 
-	robot, err := domain.ReconstituteRobot(id, siteID, lifecycle, registeredAt, nil)
+	robot, err := domain.ReconstituteRobot(id, siteID, lifecycle, registeredAt, domain.BatteryHealthUnknown, nil)
 	require.NoError(t, err)
 	robots.stored[id] = robot
 }

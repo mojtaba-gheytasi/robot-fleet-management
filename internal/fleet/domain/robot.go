@@ -22,10 +22,6 @@ const (
 	LifecycleInactive Lifecycle = "INACTIVE"
 )
 
-type BatteryHealth string
-
-const BatteryHealthUnknown BatteryHealth = "UNKNOWN"
-
 type Connectivity string
 
 const (
@@ -40,15 +36,17 @@ type Robot struct {
 	lifecycle    Lifecycle
 	registeredAt time.Time
 
-	latest *AppliedObservation
+	batteryHealth BatteryHealth
+	latest        *AppliedObservation
 }
 
 func NewRobot(id RobotID, siteID SiteID, now time.Time) (*Robot, error) {
 	robot := &Robot{
-		id:           id,
-		siteID:       siteID,
-		lifecycle:    LifecycleActive,
-		registeredAt: now,
+		id:            id,
+		siteID:        siteID,
+		lifecycle:     LifecycleActive,
+		registeredAt:  now,
+		batteryHealth: BatteryHealthUnknown,
 	}
 
 	if err := robot.validate(); err != nil {
@@ -63,14 +61,16 @@ func ReconstituteRobot(
 	siteID SiteID,
 	lifecycle Lifecycle,
 	registeredAt time.Time,
+	batteryHealth BatteryHealth,
 	latest *AppliedObservation,
 ) (*Robot, error) {
 	robot := &Robot{
-		id:           id,
-		siteID:       siteID,
-		lifecycle:    lifecycle,
-		registeredAt: registeredAt,
-		latest:       latest,
+		id:            id,
+		siteID:        siteID,
+		lifecycle:     lifecycle,
+		registeredAt:  registeredAt,
+		batteryHealth: batteryHealth,
+		latest:        latest,
 	}
 
 	if err := robot.validate(); err != nil {
@@ -120,12 +120,13 @@ func (robot *Robot) ApplyObservation(observation Observation, receivedAt time.Ti
 	}
 
 	robot.latest = &AppliedObservation{Observation: observation, ReceivedAt: receivedAt}
+	robot.batteryHealth = robot.batteryHealth.after(observation.Battery())
 
 	return ObservationApplied, nil
 }
 
 func (robot *Robot) BatteryHealth() BatteryHealth {
-	return BatteryHealthUnknown
+	return robot.batteryHealth
 }
 
 func (robot *Robot) ConnectivityAt(now time.Time) Connectivity {
@@ -155,6 +156,10 @@ func (robot *Robot) validate() error {
 
 	if robot.lifecycle != LifecycleActive && robot.lifecycle != LifecycleInactive {
 		return fmt.Errorf("%w: unknown lifecycle %q", ErrInvalidRobot, robot.lifecycle)
+	}
+
+	if robot.batteryHealth.isValid() == false {
+		return fmt.Errorf("%w: unknown battery health %q", ErrInvalidRobot, robot.batteryHealth)
 	}
 
 	if robot.registeredAt.IsZero() {

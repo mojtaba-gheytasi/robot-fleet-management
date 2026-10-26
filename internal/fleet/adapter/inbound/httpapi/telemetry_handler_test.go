@@ -135,7 +135,7 @@ func TestGetRobotShowsTheLatestObservation(t *testing.T) {
 		"site_id": "site-north",
 		"lifecycle": "ACTIVE",
 		"registered_at": "2026-10-25T14:00:00Z",
-		"battery_health": "UNKNOWN",
+		"battery_health": "LOW",
 		"connectivity": "ONLINE",
 		"latest_observation": {
 			"observation_id": "obs-102",

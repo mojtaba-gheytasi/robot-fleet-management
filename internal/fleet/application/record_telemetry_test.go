@@ -2,6 +2,7 @@ package application_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -112,6 +113,32 @@ func TestRecordTelemetryRejectsATimeTooFarAhead(t *testing.T) {
 
 	require.ErrorIs(t, err, domain.ErrClockSkewExceeded)
 	assert.Empty(t, robots.added)
+}
+
+func TestRecordTelemetryClassifiesBatteryHealth(t *testing.T) {
+	robots := newFakeRobots()
+	robots.store(t, "robot-101", "site-north", domain.LifecycleActive, fixedNow)
+	steps := []struct {
+		percent float64
+		want    domain.BatteryHealth
+	}{
+		{60, domain.BatteryHealthNormal},
+		{18, domain.BatteryHealthLow},
+		{22, domain.BatteryHealthLow},
+		{25, domain.BatteryHealthNormal},
+	}
+
+	for i, step := range steps {
+		command := validTelemetry()
+		command.ObservationID = fmt.Sprintf("obs-%d", i)
+		command.ObservedAt = fixedNow.Add(time.Duration(i+1) * time.Second)
+		command.BatteryPercent = step.percent
+
+		_, err := recordTelemetry(robots, fixedNow.Add(time.Minute), command)
+		require.NoError(t, err)
+
+		assert.Equal(t, step.want, robots.stored["robot-101"].BatteryHealth(), "after %.0f%%", step.percent)
+	}
 }
 
 func TestRobotIsOnlineAfterTelemetryAndStaleTenSecondsLater(t *testing.T) {

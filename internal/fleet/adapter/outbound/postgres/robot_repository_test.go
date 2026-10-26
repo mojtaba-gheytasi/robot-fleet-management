@@ -364,6 +364,77 @@ func TestConcurrentResendsOfOneObservationApplyItOnce(t *testing.T) {
 	assert.Equal(t, 1, countObservations(t, db))
 }
 
+func TestRobotRepositoryStoresBatteryHealth(t *testing.T) {
+	ctx := context.Background()
+	repository := postgres.NewRobotRepository(startPostgres(t))
+	require.NoError(t, repository.Create(ctx, newRobot(t, "robot-101", "site-north")))
+
+	reportBattery(t, repository, "obs-1", 1, 18)
+
+	robot, err := repository.FindByID(ctx, "robot-101")
+	require.NoError(t, err)
+	assert.Equal(t, domain.BatteryHealthLow, robot.BatteryHealth())
+
+	robots, err := repository.List(ctx, nil)
+	require.NoError(t, err)
+	assert.Equal(t, domain.BatteryHealthLow, robots[0].BatteryHealth())
+}
+
+func TestRobotRepositoryWritesBatteryHealthOnlyWhenItChanges(t *testing.T) {
+	ctx := context.Background()
+	db := startPostgres(t)
+	repository := postgres.NewRobotRepository(db)
+	require.NoError(t, repository.Create(ctx, newRobot(t, "robot-101", "site-north")))
+	rowVersion := func() string {
+		var xmin string
+		require.NoError(t, db.QueryRow(`SELECT xmin::text FROM robots WHERE id = 'robot-101'`).Scan(&xmin))
+		return xmin
+	}
+
+	reportBattery(t, repository, "obs-1", 1, 60)
+	normal := rowVersion()
+
+	reportBattery(t, repository, "obs-2", 2, 70)
+	assert.Equal(t, normal, rowVersion(), "health stayed NORMAL, so the row must not be written")
+
+	reportBattery(t, repository, "obs-3", 3, 10)
+	assert.NotEqual(t, normal, rowVersion(), "health became LOW, so the row must be written")
+}
+
+func TestRobotRepositoryRollsBackTheBatteryHealthWithTheWork(t *testing.T) {
+	ctx := context.Background()
+	db := startPostgres(t)
+	repository := postgres.NewRobotRepository(db)
+	require.NoError(t, repository.Create(ctx, newRobot(t, "robot-101", "site-north")))
+	failure := errors.New("rule broken")
+
+	err := repository.WithLockedRobot(ctx, "robot-101", func(robot *domain.Robot, log application.ObservationLog) error {
+		reading := applied(t, "obs-1", registeredAt.Add(time.Second), 10, registeredAt.Add(time.Minute))
+		outcome, err := robot.ApplyObservation(reading.Observation, reading.ReceivedAt)
+		require.NoError(t, err)
+		require.NoError(t, log.Add(ctx, reading.Observation, reading.ReceivedAt, outcome))
+		require.Equal(t, domain.BatteryHealthLow, robot.BatteryHealth())
+
+		return failure
+	})
+	require.ErrorIs(t, err, failure)
+
+	robot, err := repository.FindByID(ctx, "robot-101")
+	require.NoError(t, err)
+	assert.Equal(t, domain.BatteryHealthUnknown, robot.BatteryHealth())
+	assert.Equal(t, 0, countObservations(t, db))
+}
+
+func reportBattery(t *testing.T, repository *postgres.RobotRepository, id string, second int, percent float64) {
+	t.Helper()
+
+	command := telemetryCommand(id, registeredAt.Add(time.Duration(second)*time.Second))
+	command.BatteryPercent = percent
+
+	_, err := application.NewRecordTelemetry(repository, increasingClock()).Execute(context.Background(), command)
+	require.NoError(t, err)
+}
+
 // Each call is later than the last, so receipt order is exactly lock order.
 func increasingClock() application.Clock {
 	var calls atomic.Int64

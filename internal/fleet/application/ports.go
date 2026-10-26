@@ -15,7 +15,8 @@ type RobotRepository interface {
 	// List with a nil siteID returns every site.
 	List(ctx context.Context, siteID *domain.SiteID) ([]*domain.Robot, error)
 
-	// WithLockedRobot runs fn while the robot row is locked; an error from fn rolls back.
+	// WithLockedRobot runs fn while the robot row is locked and saves the robot's changes with it;
+	// an error from fn rolls everything back.
 	WithLockedRobot(ctx context.Context, id domain.RobotID, fn func(robot *domain.Robot, log ObservationLog) error) error
 }
 
