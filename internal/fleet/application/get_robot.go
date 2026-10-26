@@ -16,8 +16,6 @@ func NewGetRobot(robots RobotRepository, clock Clock) *GetRobot {
 	return &GetRobot{robots: robots, clock: clock}
 }
 
-// Execute returns ErrRobotNotFound for any ID that is not stored, including
-// one that could never be valid: the caller only needs to know it is not there.
 func (query *GetRobot) Execute(ctx context.Context, robotID string) (RobotState, error) {
 	robot, err := query.robots.FindByID(ctx, domain.RobotID(robotID))
 	if err != nil {

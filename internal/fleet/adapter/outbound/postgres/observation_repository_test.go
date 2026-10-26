@@ -66,9 +66,7 @@ func TestRobotRepositoryListsRobotsWithTheirLatestObservation(t *testing.T) {
 	assert.False(t, ok)
 }
 
-// The planner prefers a sequential scan on tiny tables, so sequential scans
-// are switched off for this session: what is left proves the query is shaped
-// so the partial index can answer it.
+// Tiny tables favour a sequential scan, so it is switched off to test the query shape.
 func TestRobotQueriesUseThePartialIndexForTheCurrentObservation(t *testing.T) {
 	ctx := context.Background()
 	db := startPostgres(t)

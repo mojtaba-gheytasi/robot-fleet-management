@@ -10,8 +10,6 @@ import (
 	"github.com/mojtaba-gheytasi/robot-fleet-management/internal/fleet/domain"
 )
 
-// The use case interfaces are declared here, where they are used, so handler
-// tests can pass fakes.
 type RegisterRobotUseCase interface {
 	Execute(ctx context.Context, command application.RegisterRobotCommand) (application.RegisterRobotResult, error)
 }
@@ -46,10 +44,6 @@ type robotResponse struct {
 	LatestObservation *observationResponse `json:"latest_observation"`
 }
 
-// observationResponse is the robot's latest applied observation. It is null
-// until the robot reports one, rather than filled with made-up values (VIS-06).
-// Both times are shown: observed_at is when the robot measured, received_at
-// is when the server got it.
 type observationResponse struct {
 	ObservationID  string           `json:"observation_id"`
 	ObservedAt     time.Time        `json:"observed_at"`
@@ -68,8 +62,6 @@ type robotListResponse struct {
 	Robots []robotResponse `json:"robots"`
 }
 
-// register handles POST /api/robots: 201 for a new robot, 200 for an
-// identical retry.
 func (handler *robotHandler) register(w http.ResponseWriter, r *http.Request) {
 	var request registerRobotRequest
 	if err := decodeJSON(w, r, &request); err != nil {
@@ -94,7 +86,6 @@ func (handler *robotHandler) register(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, robotResponseFrom(result.RobotState))
 }
 
-// get handles GET /api/robots/{id}.
 func (handler *robotHandler) get(w http.ResponseWriter, r *http.Request) {
 	state, err := handler.getRobot.Execute(r.Context(), r.PathValue("id"))
 	if err != nil {
@@ -105,7 +96,6 @@ func (handler *robotHandler) get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, robotResponseFrom(state))
 }
 
-// list handles GET /api/robots with an optional site_id filter.
 func (handler *robotHandler) list(w http.ResponseWriter, r *http.Request) {
 	states, err := handler.listRobots.Execute(r.Context(), application.ListRobotsQuery{
 		SiteID: r.URL.Query().Get("site_id"),

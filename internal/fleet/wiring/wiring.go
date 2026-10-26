@@ -1,5 +1,3 @@
-// Package wiring is the fleet module's composition root: the only place that
-// knows which concrete adapters sit behind the application's ports.
 package wiring
 
 import (
@@ -24,8 +22,7 @@ type Module struct {
 }
 
 func New(dependencies Dependencies) *Module {
-	// PostgreSQL stores microseconds. Truncating here means a robot returned
-	// right after it is created matches the one read back later.
+	// PostgreSQL stores microseconds.
 	clock := application.Clock(func() time.Time {
 		return dependencies.Clock().Truncate(time.Microsecond)
 	})

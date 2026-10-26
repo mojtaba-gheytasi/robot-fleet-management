@@ -48,9 +48,7 @@ func (useCase *RegisterRobot) Execute(
 		return RegisterRobotResult{}, fmt.Errorf("create robot: %w", err)
 	}
 
-	// REG-01: repeating a registration with the same data succeeds and returns
-	// the robot as stored, so a retry after a lost response is safe. It does
-	// not reactivate an INACTIVE robot.
+	// REG-01: an identical retry returns the stored robot unchanged.
 	existing, err := useCase.robots.FindByID(ctx, robot.ID())
 	if err != nil {
 		return RegisterRobotResult{}, fmt.Errorf("load existing robot: %w", err)

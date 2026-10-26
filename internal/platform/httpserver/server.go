@@ -5,8 +5,6 @@ import (
 	"time"
 )
 
-// Explicit timeouts: the zero values mean "wait forever", so one slow client
-// could hold a connection open indefinitely.
 const (
 	readHeaderTimeout = 5 * time.Second
 	readTimeout       = 10 * time.Second

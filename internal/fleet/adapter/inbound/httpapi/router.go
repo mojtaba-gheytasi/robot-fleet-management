@@ -1,6 +1,3 @@
-// Package httpapi translates HTTP requests into application commands and
-// application results and errors into HTTP responses. It is the only place
-// that knows HTTP status codes.
 package httpapi
 
 import (

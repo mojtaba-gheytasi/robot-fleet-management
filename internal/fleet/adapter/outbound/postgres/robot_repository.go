@@ -14,18 +14,12 @@ import (
 )
 
 const (
-	// ON CONFLICT DO NOTHING leaves an existing robot untouched, so two
-	// identical registrations racing each other both end without an error
-	// and the use case decides what the second one means.
 	insertRobotQuery = `
 		INSERT INTO robots (id, site_id, lifecycle, created_at)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (id) DO NOTHING`
 
-	// selectRobotsQuery loads robots with their current observation. The
-	// lateral subquery asks "newest APPLIED observation of this robot" in
-	// exactly the shape the partial index answers, so it is one index lookup
-	// per robot whatever the size of the history.
+	// Shaped so the partial index answers the lateral lookup; see the EXPLAIN test.
 	selectRobotsQuery = `
 		SELECT
 			r.id, r.site_id, r.lifecycle, r.created_at,
@@ -109,7 +103,6 @@ func (repository *RobotRepository) FindByID(ctx context.Context, id domain.Robot
 }
 
 func (repository *RobotRepository) List(ctx context.Context, siteID *domain.SiteID) ([]*domain.Robot, error) {
-	// A nil filter is sent as SQL NULL, which the query reads as "every site".
 	var siteFilter any
 	if siteID != nil {
 		siteFilter = string(*siteID)
@@ -152,7 +145,7 @@ func (repository *RobotRepository) AddAppliedObservation(
 		string(observation.ID()),
 		observation.ObservedAt(),
 		applied.ReceivedAt,
-		// Sent as text so numeric(5,2) stores exactly the two decimals.
+		// As text, so numeric(5,2) stores the exact two decimals.
 		observation.Battery().String(),
 		observation.Position().X(),
 		observation.Position().Y(),
@@ -165,7 +158,6 @@ func (repository *RobotRepository) AddAppliedObservation(
 	return nil
 }
 
-// rowScanner is the part of *sql.Row and *sql.Rows that scanRobot needs.
 type rowScanner interface {
 	Scan(dest ...any) error
 }
@@ -177,7 +169,6 @@ func scanRobot(row rowScanner) (*domain.Robot, error) {
 		lifecycle    string
 		registeredAt time.Time
 
-		// NULL for every observation column when the robot has not reported.
 		observationID  sql.NullString
 		observedAt     sql.NullTime
 		receivedAt     sql.NullTime

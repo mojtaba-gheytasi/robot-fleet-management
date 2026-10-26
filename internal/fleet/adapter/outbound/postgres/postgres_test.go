@@ -16,8 +16,6 @@ import (
 	"github.com/mojtaba-gheytasi/robot-fleet-management/internal/platform/database"
 )
 
-// startPostgres starts a fresh database with every migration applied, so each
-// test sees the real schema, constraints and seeded sites.
 func startPostgres(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx := context.Background()

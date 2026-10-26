@@ -9,7 +9,6 @@ const maxObservationIDLength = 64
 
 type ObservationID string
 
-// Observation is one snapshot from a robot, as the robot measured it.
 type Observation struct {
 	id            ObservationID
 	observedAt    time.Time
@@ -37,8 +36,7 @@ func NewObservation(
 		return Observation{}, fmt.Errorf("%w: observation time is required", ErrInvalidObservation)
 	}
 
-	// PostgreSQL keeps microseconds. A finer time would come back different
-	// from what the robot sent, so a resend could not be matched to it.
+	// PostgreSQL stores microseconds; a finer time would never match on resend.
 	if observedAt.Truncate(time.Microsecond).Equal(observedAt) == false {
 		return Observation{}, fmt.Errorf(
 			"%w: observation time has more than microsecond precision",
@@ -75,8 +73,6 @@ func (observation Observation) OperatingMode() OperatingMode {
 	return observation.operatingMode
 }
 
-// AppliedObservation is an observation that became the robot's current
-// state, with the time the server received it.
 type AppliedObservation struct {
 	Observation Observation
 	ReceivedAt  time.Time

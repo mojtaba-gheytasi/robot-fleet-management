@@ -49,8 +49,6 @@ func (useCase *RecordTelemetry) Execute(
 		return RecordTelemetryResult{}, fmt.Errorf("find robot: %w", err)
 	}
 
-	// The receipt time comes from the server clock, never from the robot:
-	// connectivity is judged by it (HLT-04).
 	applied := robot.ApplyObservation(observation, useCase.clock())
 
 	if err := useCase.robots.AddAppliedObservation(ctx, robot.ID(), applied); err != nil {

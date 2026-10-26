@@ -14,8 +14,6 @@ const (
 	pingTimeout  = 5 * time.Second
 )
 
-// Open connects and pings once, so a wrong URL or a database that is down
-// stops the service at startup rather than on the first request.
 func Open(ctx context.Context, url string) (*sql.DB, error) {
 	db, err := sql.Open("pgx", url)
 	if err != nil {

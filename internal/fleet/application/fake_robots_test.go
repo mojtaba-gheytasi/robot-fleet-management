@@ -82,7 +82,6 @@ func (robots *fakeRobots) AddAppliedObservation(
 ) error {
 	robots.added = append(robots.added, applied)
 
-	// Keep the stored robot in step, as the real table would.
 	stored := robots.stored[robotID]
 	stored.ApplyObservation(applied.Observation, applied.ReceivedAt)
 

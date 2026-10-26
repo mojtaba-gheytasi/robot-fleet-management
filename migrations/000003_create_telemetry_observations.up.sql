@@ -1,4 +1,3 @@
--- Every observation a robot sent, applied or not. Rows are never updated.
 CREATE TABLE telemetry_observations (
     robot_id        text             NOT NULL REFERENCES robots (id),
     observation_id  text             NOT NULL,
@@ -12,8 +11,6 @@ CREATE TABLE telemetry_observations (
     PRIMARY KEY (robot_id, observation_id)
 );
 
--- Finds a robot's current observation in one lookup, however large the table
--- grows: only APPLIED rows, newest first per robot.
 CREATE INDEX telemetry_observations_current_idx
     ON telemetry_observations (robot_id, observed_at DESC)
     WHERE outcome = 'APPLIED';

@@ -5,7 +5,6 @@ import (
 	"math"
 )
 
-// Position is a point in metres in the site's own coordinate system (TEL-03).
 type Position struct {
 	x float64
 	y float64

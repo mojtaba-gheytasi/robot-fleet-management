@@ -10,9 +10,6 @@ import (
 
 const maxBodyBytes = 64 << 10
 
-// decodeJSON reads exactly one JSON object. Unknown fields and trailing data
-// are rejected, so a typo in a field name fails loudly instead of being
-// silently ignored.
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) error {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	decoder.DisallowUnknownFields()

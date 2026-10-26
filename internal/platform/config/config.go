@@ -1,5 +1,3 @@
-// Package config reads the service settings from environment variables.
-// Docker Compose loads them from .env; .env.example documents every one.
 package config
 
 import (
@@ -14,8 +12,6 @@ type Config struct {
 	HTTPServerAddress string
 }
 
-// Load takes the lookup function as a parameter so tests do not have to
-// change the real environment.
 func Load(getenv func(string) string) (Config, error) {
 	cfg := Config{
 		DatabaseURL:       strings.TrimSpace(getenv("DATABASE_URL")),

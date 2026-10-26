@@ -8,8 +8,6 @@ import (
 const (
 	maxRobotIDLength = 64
 
-	// A robot is ONLINE while its last applied observation was received no
-	// more than this long ago (HLT-04).
 	onlineWindow = 10 * time.Second
 )
 
@@ -41,14 +39,9 @@ type Robot struct {
 	lifecycle    Lifecycle
 	registeredAt time.Time
 
-	// latest is the current state: the newest applied observation, or nil
-	// before the robot has reported. History is stored separately and is not
-	// part of the aggregate, so it stays small however long the robot runs.
 	latest *AppliedObservation
 }
 
-// NewRobot registers a robot at a site. A new robot starts ACTIVE (REG-03).
-// Whether the site exists is checked when the robot is stored.
 func NewRobot(id RobotID, siteID SiteID, now time.Time) (*Robot, error) {
 	robot := &Robot{
 		id:           id,
@@ -102,8 +95,6 @@ func (robot *Robot) RegisteredAt() time.Time {
 	return robot.registeredAt
 }
 
-// LatestObservation returns the current state, and false before the robot
-// has reported.
 func (robot *Robot) LatestObservation() (AppliedObservation, bool) {
 	if robot.latest == nil {
 		return AppliedObservation{}, false
@@ -112,7 +103,6 @@ func (robot *Robot) LatestObservation() (AppliedObservation, bool) {
 	return *robot.latest, true
 }
 
-// ApplyObservation makes the observation the robot's current state.
 func (robot *Robot) ApplyObservation(observation Observation, receivedAt time.Time) AppliedObservation {
 	applied := AppliedObservation{Observation: observation, ReceivedAt: receivedAt}
 	robot.latest = &applied
@@ -120,15 +110,10 @@ func (robot *Robot) ApplyObservation(observation Observation, receivedAt time.Ti
 	return applied
 }
 
-// BatteryHealth stays UNKNOWN until battery health is classified from applied
-// observations (HLT-01 to HLT-03).
 func (robot *Robot) BatteryHealth() BatteryHealth {
 	return BatteryHealthUnknown
 }
 
-// ConnectivityAt takes the time of reading because connectivity is never
-// stored: the same robot is ONLINE now and STALE ten seconds later without
-// any write. It uses the server's receipt time, not the robot's clock.
 func (robot *Robot) ConnectivityAt(now time.Time) Connectivity {
 	if robot.latest == nil {
 		return ConnectivityUnknown
@@ -165,8 +150,7 @@ func (robot *Robot) validate() error {
 	return nil
 }
 
-// The ID appears in URL paths such as /api/robots/{id}, so characters like
-// '/' or spaces would make a robot impossible to address.
+// Robot IDs appear in URL paths.
 func isValidRobotID(id RobotID) bool {
 	if len(id) == 0 || len(id) > maxRobotIDLength {
 		return false

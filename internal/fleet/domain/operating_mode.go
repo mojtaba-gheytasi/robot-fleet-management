@@ -2,8 +2,6 @@ package domain
 
 import "fmt"
 
-// OperatingMode is what the robot reports it is doing. It is shown, but does
-// not drive any rule in this scope (HLT-08).
 type OperatingMode string
 
 const (

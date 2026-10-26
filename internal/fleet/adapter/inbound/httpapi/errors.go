@@ -31,9 +31,6 @@ func respondError(w http.ResponseWriter, status int, code string, message string
 	writeJSON(w, status, errorResponse{Error: errorBody{Code: code, Message: message}})
 }
 
-// respondUseCaseError maps application and domain errors to a status and a
-// stable code. Anything unexpected is logged and answered as INTERNAL,
-// without exposing the cause.
 func respondUseCaseError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error) {
 	switch {
 	case errors.Is(err, domain.ErrInvalidRobot):

@@ -1,6 +1,3 @@
-// Package bootstrap builds the running process: configuration, logger,
-// database, the fleet module and the HTTP server, and shuts them down in
-// order on SIGINT or SIGTERM.
 package bootstrap
 
 import (
@@ -53,8 +50,6 @@ func Run(ctx context.Context) error {
 	mux.Handle("/api/", fleet.HTTPHandler)
 	server := httpserver.New(mux)
 
-	// Listen before serving, so a bad or busy address fails here with a clear
-	// error instead of after "listening" has been logged.
 	listener, err := net.Listen("tcp", cfg.HTTPServerAddress)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", cfg.HTTPServerAddress, err)

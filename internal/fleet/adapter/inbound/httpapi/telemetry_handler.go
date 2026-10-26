@@ -19,8 +19,7 @@ type telemetryHandler struct {
 	recordTelemetry RecordTelemetryUseCase
 }
 
-// Every field is a pointer so a missing field can be told apart from a zero
-// value: a missing battery_percent must not be read as an empty battery.
+// Pointers, so a missing battery_percent is not read as 0%.
 type recordTelemetryRequest struct {
 	ObservationID  *string          `json:"observation_id"`
 	ObservedAt     *time.Time       `json:"observed_at"`
@@ -40,7 +39,6 @@ type recordTelemetryResponse struct {
 	ObservationID string `json:"observation_id"`
 }
 
-// record handles POST /api/robots/{id}/telemetry.
 func (handler *telemetryHandler) record(w http.ResponseWriter, r *http.Request) {
 	var request recordTelemetryRequest
 	if err := decodeJSON(w, r, &request); err != nil {

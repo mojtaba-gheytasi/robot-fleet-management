@@ -8,7 +8,6 @@ import (
 )
 
 type ListRobotsQuery struct {
-	// SiteID limits the list to one site; empty means every site.
 	SiteID string
 }
 
@@ -33,7 +32,6 @@ func (query *ListRobots) Execute(ctx context.Context, request ListRobotsQuery) (
 		return nil, fmt.Errorf("list robots: %w", err)
 	}
 
-	// One time for the whole list, so every robot is judged at the same moment.
 	now := query.clock()
 	states := make([]RobotState, 0, len(robots))
 	for _, robot := range robots {
