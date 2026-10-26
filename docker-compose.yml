@@ -1,0 +1,48 @@
+services:
+  fleet:
+    build: .
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-fleet}:${POSTGRES_PASSWORD:-fleet_dev_password}@postgres:5432/${POSTGRES_DB:-fleet}?sslmode=disable
+      # Inside the container the service must listen on all interfaces; the
+      # port below is published on the host's loopback only, because the API
+      # has no authentication.
+      HTTP_SERVER_ADDRESS: 0.0.0.0:8080
+    ports:
+      - "127.0.0.1:${HTTP_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  migrate:
+    image: migrate/migrate:v4.19.1
+    command:
+      - -path=/migrations/
+      - -database=postgres://${POSTGRES_USER:-fleet}:${POSTGRES_PASSWORD:-fleet_dev_password}@postgres:5432/${POSTGRES_DB:-fleet}?sslmode=disable
+      - up
+    volumes:
+      - ./migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  postgres:
+    image: postgres:18.6-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-fleet}
+      POSTGRES_USER: ${POSTGRES_USER:-fleet}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fleet_dev_password}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:
