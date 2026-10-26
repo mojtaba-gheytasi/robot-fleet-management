@@ -76,3 +76,45 @@ func newRobot(t *testing.T, id domain.RobotID, siteID domain.SiteID) *domain.Rob
 
 	return robot
 }
+
+func TestRobotRepositoryListsRobotsOrderedByID(t *testing.T) {
+	ctx := context.Background()
+	repository := postgres.NewRobotRepository(startPostgres(t))
+	for _, robot := range []*domain.Robot{
+		newRobot(t, "robot-201", "site-south"),
+		newRobot(t, "robot-102", "site-north"),
+		newRobot(t, "robot-101", "site-north"),
+	} {
+		require.NoError(t, repository.Create(ctx, robot))
+	}
+
+	all, err := repository.List(ctx, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []domain.RobotID{"robot-101", "robot-102", "robot-201"}, robotIDs(all))
+
+	north := domain.SiteID("site-north")
+	atNorth, err := repository.List(ctx, &north)
+	require.NoError(t, err)
+	assert.Equal(t, []domain.RobotID{"robot-101", "robot-102"}, robotIDs(atNorth))
+}
+
+func TestRobotRepositoryListsNothingForASiteWithoutRobots(t *testing.T) {
+	ctx := context.Background()
+	repository := postgres.NewRobotRepository(startPostgres(t))
+	require.NoError(t, repository.Create(ctx, newRobot(t, "robot-101", "site-north")))
+
+	south := domain.SiteID("site-south")
+	robots, err := repository.List(ctx, &south)
+
+	require.NoError(t, err)
+	assert.Empty(t, robots)
+}
+
+func robotIDs(robots []*domain.Robot) []domain.RobotID {
+	ids := make([]domain.RobotID, 0, len(robots))
+	for _, robot := range robots {
+		ids = append(ids, robot.ID())
+	}
+
+	return ids
+}

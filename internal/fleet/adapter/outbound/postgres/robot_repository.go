@@ -27,6 +27,12 @@ const (
 		FROM robots
 		WHERE id = $1`
 
+	listRobotsQuery = `
+		SELECT id, site_id, lifecycle, created_at
+		FROM robots
+		WHERE $1::text IS NULL OR site_id = $1
+		ORDER BY id`
+
 	foreignKeyViolation = "23503"
 	siteForeignKey      = "robots_site_id_fkey"
 )
@@ -70,6 +76,53 @@ func (repository *RobotRepository) Create(ctx context.Context, robot *domain.Rob
 }
 
 func (repository *RobotRepository) FindByID(ctx context.Context, id domain.RobotID) (*domain.Robot, error) {
+	robot, err := scanRobot(repository.db.QueryRowContext(ctx, findRobotByIDQuery, string(id)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, application.ErrRobotNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find robot: %w", err)
+	}
+
+	return robot, nil
+}
+
+func (repository *RobotRepository) List(ctx context.Context, siteID *domain.SiteID) ([]*domain.Robot, error) {
+	// A nil filter is sent as SQL NULL, which the query reads as "every site".
+	var siteFilter any
+	if siteID != nil {
+		siteFilter = string(*siteID)
+	}
+
+	rows, err := repository.db.QueryContext(ctx, listRobotsQuery, siteFilter)
+	if err != nil {
+		return nil, fmt.Errorf("list robots: %w", err)
+	}
+	defer rows.Close()
+
+	robots := make([]*domain.Robot, 0)
+	for rows.Next() {
+		robot, err := scanRobot(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list robots: %w", err)
+		}
+
+		robots = append(robots, robot)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate robots: %w", err)
+	}
+
+	return robots, nil
+}
+
+// rowScanner is the part of *sql.Row and *sql.Rows that scanRobot needs.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanRobot(row rowScanner) (*domain.Robot, error) {
 	var (
 		robotID      string
 		siteID       string
@@ -77,13 +130,8 @@ func (repository *RobotRepository) FindByID(ctx context.Context, id domain.Robot
 		registeredAt time.Time
 	)
 
-	err := repository.db.QueryRowContext(ctx, findRobotByIDQuery, string(id)).
-		Scan(&robotID, &siteID, &lifecycle, &registeredAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, application.ErrRobotNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("find robot: %w", err)
+	if err := row.Scan(&robotID, &siteID, &lifecycle, &registeredAt); err != nil {
+		return nil, err
 	}
 
 	robot, err := domain.ReconstituteRobot(
