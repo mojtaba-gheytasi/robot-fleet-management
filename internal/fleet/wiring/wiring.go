@@ -42,6 +42,9 @@ func New(dependencies Dependencies) *Module {
 			GetRobot:      application.NewGetRobot(robots, clock),
 			ListRobots:    application.NewListRobots(robots, clock),
 
+			DeactivateRobot: application.NewDeactivateRobot(robots, clock),
+			ActivateRobot:   application.NewActivateRobot(robots, clock),
+
 			RecordTelemetry: application.NewRecordTelemetry(robots, clock),
 
 			ListAlerts:       application.NewListAlerts(alerts),

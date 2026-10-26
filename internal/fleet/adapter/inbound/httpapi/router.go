@@ -11,6 +11,9 @@ type Config struct {
 	GetRobot      GetRobotUseCase
 	ListRobots    ListRobotsUseCase
 
+	DeactivateRobot ChangeLifecycleUseCase
+	ActivateRobot   ChangeLifecycleUseCase
+
 	RecordTelemetry RecordTelemetryUseCase
 
 	ListAlerts       ListAlertsUseCase
@@ -23,6 +26,9 @@ func NewHandler(config Config) http.Handler {
 		registerRobot: config.RegisterRobot,
 		getRobot:      config.GetRobot,
 		listRobots:    config.ListRobots,
+
+		deactivateRobot: config.DeactivateRobot,
+		activateRobot:   config.ActivateRobot,
 	}
 
 	telemetry := &telemetryHandler{
@@ -40,6 +46,8 @@ func NewHandler(config Config) http.Handler {
 	mux.HandleFunc("POST /api/robots", robots.register)
 	mux.HandleFunc("GET /api/robots", robots.list)
 	mux.HandleFunc("GET /api/robots/{id}", robots.get)
+	mux.HandleFunc("POST /api/robots/{id}/deactivate", robots.deactivate)
+	mux.HandleFunc("POST /api/robots/{id}/activate", robots.activate)
 	mux.HandleFunc("POST /api/robots/{id}/telemetry", telemetry.record)
 	mux.HandleFunc("GET /api/alerts", alerts.list)
 	mux.HandleFunc("POST /api/alerts/{id}/acknowledge", alerts.acknowledge)

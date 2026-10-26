@@ -19,6 +19,7 @@ const (
 	codeClockSkewExceeded         = "CLOCK_SKEW_EXCEEDED"
 	codeAlertNotFound             = "ALERT_NOT_FOUND"
 	codeAlertTerminal             = "ALERT_TERMINAL"
+	codeRobotInactive             = "ROBOT_INACTIVE"
 	codeInternal                  = "INTERNAL"
 )
 
@@ -41,6 +42,8 @@ func respondUseCaseError(w http.ResponseWriter, r *http.Request, logger *slog.Lo
 		respondError(w, http.StatusBadRequest, codeInvalidRequest, err.Error())
 	case errors.Is(err, domain.ErrInvalidObservation):
 		respondError(w, http.StatusUnprocessableEntity, codeInvalidObservation, err.Error())
+	case errors.Is(err, domain.ErrRobotInactive):
+		respondError(w, http.StatusConflict, codeRobotInactive, "the robot is inactive and does not accept new observations")
 	case errors.Is(err, domain.ErrClockSkewExceeded):
 		respondError(w, http.StatusUnprocessableEntity, codeClockSkewExceeded, err.Error())
 	case errors.Is(err, domain.ErrObservationConflict):

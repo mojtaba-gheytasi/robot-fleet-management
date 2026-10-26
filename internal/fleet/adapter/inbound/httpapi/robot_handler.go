@@ -22,11 +22,17 @@ type ListRobotsUseCase interface {
 	Execute(ctx context.Context, query application.ListRobotsQuery) ([]application.RobotState, error)
 }
 
+type ChangeLifecycleUseCase interface {
+	Execute(ctx context.Context, robotID string) (application.RobotState, error)
+}
+
 type robotHandler struct {
-	logger        *slog.Logger
-	registerRobot RegisterRobotUseCase
-	getRobot      GetRobotUseCase
-	listRobots    ListRobotsUseCase
+	logger          *slog.Logger
+	registerRobot   RegisterRobotUseCase
+	getRobot        GetRobotUseCase
+	listRobots      ListRobotsUseCase
+	deactivateRobot ChangeLifecycleUseCase
+	activateRobot   ChangeLifecycleUseCase
 }
 
 type registerRobotRequest struct {
@@ -111,6 +117,24 @@ func (handler *robotHandler) list(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, robotListResponse{Robots: robots})
+}
+
+func (handler *robotHandler) deactivate(w http.ResponseWriter, r *http.Request) {
+	handler.changeLifecycle(w, r, handler.deactivateRobot)
+}
+
+func (handler *robotHandler) activate(w http.ResponseWriter, r *http.Request) {
+	handler.changeLifecycle(w, r, handler.activateRobot)
+}
+
+func (handler *robotHandler) changeLifecycle(w http.ResponseWriter, r *http.Request, useCase ChangeLifecycleUseCase) {
+	state, err := useCase.Execute(r.Context(), r.PathValue("id"))
+	if err != nil {
+		respondUseCaseError(w, r, handler.logger, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, robotResponseFrom(state))
 }
 
 func robotResponseFrom(state application.RobotState) robotResponse {
