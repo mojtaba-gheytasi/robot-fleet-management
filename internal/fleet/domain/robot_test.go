@@ -178,3 +178,82 @@ func TestApplyObservationRejectsATimeTooFarAheadOfTheServer(t *testing.T) {
 	latest, _ := robot.LatestObservation()
 	assert.Equal(t, domain.ObservationID("obs-1"), latest.Observation.ID())
 }
+
+func TestReconstituteRobotRejectsContradictoryState(t *testing.T) {
+	at := func(percent float64) *domain.AppliedObservation {
+		return &domain.AppliedObservation{Observation: newObservation(t, "obs-1", now, percent), ReceivedAt: now}
+	}
+
+	tests := map[string]struct {
+		activatedAt time.Time
+		health      domain.BatteryHealth
+		latest      *domain.AppliedObservation
+	}{
+		"LOW with no applied observation":     {now, domain.BatteryHealthLow, nil},
+		"NORMAL with no applied observation":  {now, domain.BatteryHealthNormal, nil},
+		"UNKNOWN with an applied observation": {now, domain.BatteryHealthUnknown, at(50)},
+		"LOW at 25%":                          {now, domain.BatteryHealthLow, at(25)},
+		"NORMAL at 19.99%":                    {now, domain.BatteryHealthNormal, at(19.99)},
+		"activated before registration":       {now.Add(-time.Second), domain.BatteryHealthUnknown, nil},
+		"latest observation is the zero value": {
+			now, domain.BatteryHealthLow, &domain.AppliedObservation{ReceivedAt: now},
+		},
+		"latest observation has no receipt time": {
+			now, domain.BatteryHealthNormal, &domain.AppliedObservation{Observation: newObservation(t, "obs-1", now, 50)},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := domain.ReconstituteRobot("robot-101", "site-north", domain.LifecycleActive, now, tt.activatedAt, tt.health, tt.latest)
+
+			require.ErrorIs(t, err, domain.ErrInvalidRobot)
+		})
+	}
+}
+
+func TestReconstituteRobotAcceptsStatesThatLifecycleAndHysteresisAllow(t *testing.T) {
+	buffer := domain.AppliedObservation{Observation: newObservation(t, "obs-1", now, 22), ReceivedAt: now}
+
+	tests := map[string]struct {
+		lifecycle   domain.Lifecycle
+		activatedAt time.Time
+		health      domain.BatteryHealth
+	}{
+		"LOW in the buffer":                      {domain.LifecycleActive, now, domain.BatteryHealthLow},
+		"NORMAL in the buffer":                   {domain.LifecycleActive, now, domain.BatteryHealthNormal},
+		"inactive keeps its last reading":        {domain.LifecycleInactive, now, domain.BatteryHealthLow},
+		"reactivated with only an older reading": {domain.LifecycleActive, now.Add(time.Hour), domain.BatteryHealthLow},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := domain.ReconstituteRobot("robot-101", "site-north", tt.lifecycle, now, tt.activatedAt, tt.health, &buffer)
+
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestReconstituteRobotDoesNotShareTheCallersObservation(t *testing.T) {
+	latest := domain.AppliedObservation{Observation: newObservation(t, "obs-1", now, 50), ReceivedAt: now}
+	robot, err := domain.ReconstituteRobot("robot-101", "site-north", domain.LifecycleActive, now, now, domain.BatteryHealthNormal, &latest)
+	require.NoError(t, err)
+
+	latest.Observation = newObservation(t, "obs-1", now, 10)
+
+	stored, _ := robot.LatestObservation()
+	assert.Equal(t, "50.00", stored.Observation.Battery().String())
+}
+
+func TestApplyObservationRejectsTheZeroObservation(t *testing.T) {
+	robot, err := domain.NewRobot("robot-101", "site-north", now)
+	require.NoError(t, err)
+
+	_, err = robot.ApplyObservation(domain.Observation{}, now)
+
+	require.ErrorIs(t, err, domain.ErrInvalidObservation)
+	assert.Equal(t, domain.BatteryHealthUnknown, robot.BatteryHealth())
+	_, ok := robot.LatestObservation()
+	assert.False(t, ok)
+}

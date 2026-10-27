@@ -21,7 +21,7 @@ If code and documents disagree, stop and ask; do not quietly change either. A be
 
 ## How work proceeds
 
-Follow the backlog in the implementation plan §9: ten vertical slices, **one at a time, one commit each**. Each slice goes through domain, application, Postgres, HTTP and tests, leaves `make test` passing, and adds only the code, columns and endpoints it needs. Stop after each slice so the user can review before the next one.
+Follow the backlog in the implementation plan §9: vertical slices, **one at a time, one commit each**. Each slice goes through domain, application, Postgres, HTTP and tests, leaves `make test` passing, and adds only the code, columns and endpoints it needs. Stop after each slice so the user can review before the next one.
 
 Do not build ahead of the current slice, and do not add anything the documents leave out (auth, broker, simulator, site API, extra alert types).
 
@@ -31,7 +31,7 @@ Go 1.25 · standard-library `net/http` (`http.ServeMux` with method patterns, `R
 
 Makefile targets: `help`, `up`, `down`, `test`, `test-integration`, `migrate-up`; `demo` arrives in slice 10. Integration tests use the `integration` build tag and need Docker.
 
-Config is environment variables only (Compose reads `.env`; `.env.example` lists them): `DATABASE_URL`, `HTTP_SERVER_ADDRESS` (default `127.0.0.1:8080`, loopback on purpose: the API has no auth). `ALERT_CHECK_INTERVAL` (default `5s`) arrives in slice 7. Compose publishes ports on `127.0.0.1` only.
+Config is environment variables only (Compose reads `.env`; `.env.example` lists them): `DATABASE_URL`, `HTTP_SERVER_ADDRESS` (default `127.0.0.1:8080`, loopback on purpose: the API has no auth). Compose publishes ports on `127.0.0.1` only.
 
 ## Architecture
 
@@ -39,12 +39,11 @@ One bounded context (Fleet Management), one `fleet` module, one Go service, port
 
 ```text
 cmd/fleet/main.go             # calls bootstrap.Run
-internal/bootstrap/           # builds the process: config, logger, DB, HTTP server, alert check, shutdown
+internal/bootstrap/           # builds the process: config, logger, DB, HTTP server, shutdown
 internal/fleet/domain/        # Robot, Alert, value objects, domain errors; standard library only
 internal/fleet/application/   # use cases, queries, ports.go, errors.go
 internal/fleet/adapter/inbound/httpapi/     # routes, DTOs, error → status mapping
-internal/fleet/adapter/inbound/alertcheck/  # ticker running ReconcileAlerts
-internal/fleet/adapter/outbound/postgres/   # repositories, transactions, read queries, reconciliation SQL
+internal/fleet/adapter/outbound/postgres/   # repositories, transactions, read queries
 internal/fleet/wiring/        # composition root
 internal/platform/{config,database,httpserver}/  # httpserver also holds /healthz and /readyz
 migrations/                   # golang-migrate; 000001 creates and seeds sites
@@ -58,17 +57,19 @@ migrations/                   # golang-migrate; 000001 creates and seeds sites
 
 ## Rules that are easy to get wrong
 
-- **Two aggregates: Robot and Alert.** Alerts are not inside Robot. Alerts are a *projection* of robot state, reconciled by a background check every 5 s with set-based SQL. Ingestion never touches alerts. `Acknowledge` is the only alert behaviour in the aggregate.
+- **Two aggregates: Robot and Alert.** Alerts are not inside Robot. Alert owns its whole lifecycle (`NewLowBatteryAlert`, `Acknowledge`, `Resolve`, `Close`); SQL only stores the result. The rule across them: after each *applied* observation, in the same transaction, a `LOW` robot with no unresolved alert gets one and a non-`LOW` robot's alert is resolved. It checks state, not "health changed", so the first low reading after reactivation still opens an alert. There is no background worker.
+- **Lock order is robot row, then alert row.** Acknowledge locks only the alert. Each use case reads the clock once, after its locks, so alert times follow lock order.
 - **Four separate facts:** lifecycle, connectivity, operating mode, battery health. None is derived from another.
 - **Connectivity is computed on read**, never stored: `UNKNOWN` with no applied observation, `ONLINE` if the last *applied* one was *received* ≤ 10 s ago, else `STALE`. Uses `received_at`, not `observed_at`.
 - **Battery health has hysteresis:** low below 20%, back to normal at 25% or more. Stored in `robots.battery_health` and updated only when it changes. `CHARGING` and `ERROR` do not affect it.
 - **Measurements live only in `telemetry_observations`.** `robots` holds registry fields, lifecycle, `activated_at` and battery health. Observation rows are immutable, one insert each.
 - **Fetch a robot's current observation only as** `WHERE robot_id = … AND outcome = 'APPLIED' ORDER BY observed_at DESC LIMIT 1`, answered by the partial index. Never `MAX()` or `EXISTS (… received_at > …)`. An `EXPLAIN` test guards this.
-- **RecordTelemetry order matters:** lock robot row → duplicate/conflict check → active check and clock skew → compare with latest applied → insert `SUPERSEDED` or `APPLIED`. The duplicate check comes before the active check, so a resend after deactivation is still `duplicate`.
+- **RecordTelemetry order matters:** lock robot row → duplicate/conflict check → lock unresolved alert → read clock → active check and clock skew → compare with latest applied → insert `SUPERSEDED` or `APPLIED` → open or resolve the alert (applied only). The duplicate check comes before the active check, so a resend after deactivation is still `duplicate`.
 - **Outcomes:** `applied`, `superseded`, `duplicate` are all successes. Same observation ID with different content is `OBSERVATION_CONFLICT`. More than 5 s in the future is `CLOCK_SKEW_EXCEEDED`.
 - **Battery is a two-decimal percentage.** Reject extra precision; do not round, or duplicate detection breaks.
-- **At most one unresolved alert per robot** is enforced by the partial unique index, not by code alone.
-- **Deactivation closes the unresolved alert immediately** with `ROBOT_DEACTIVATED` (`CLOSED`, not `RESOLVED`). Reactivation sets `activated_at`; a new alert waits for an applied observation received after it.
+- **At most one unresolved alert per robot** is enforced by the partial unique index, not by code alone. CHECK constraints (migration 000008) mirror the Alert status/field and time-order rules.
+- **Reconstitution validates.** A Robot's health must fit its latest battery (below 20% `LOW`, 25%+ `NORMAL`, either between; `UNKNOWN` only with no observation). Test fixtures that insert observations directly must keep health consistent.
+- **Deactivation closes the unresolved alert immediately** with `ROBOT_DEACTIVATED` (`CLOSED`, not `RESOLVED`). Reactivation sets `activated_at` and opens nothing; the next applied observation decides.
 - **Unknown values are `null`**, never made-up defaults.
 - **Summary:** `online`, `stale`, `low_battery` count active robots only; `online + stale` may be less than `active`.
 

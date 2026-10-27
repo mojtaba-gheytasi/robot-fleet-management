@@ -4,7 +4,6 @@ set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://127.0.0.1:${HTTP_PORT:-8080}}"
 API="$BASE_URL/api"
-ALERT_WAIT="${ALERT_WAIT:-6}"
 RUN="demo-$(date +%s)-$$"
 
 BODY=""
@@ -71,11 +70,6 @@ alert_entry() {
 	printf '%s' "$BODY" | grep -o "\"id\":\"$1\"[^}]*" || true
 }
 
-wait_for_alert_check() {
-	say "waiting ${ALERT_WAIT}s for the alert check"
-	sleep "$ALERT_WAIT"
-}
-
 curl -sSf "$BASE_URL/readyz" >/dev/null 2>&1 || {
 	echo "The service is not reachable at $BASE_URL. Start it with 'make up' (set HTTP_PORT if it is not 8080)." >&2
 	exit 1
@@ -97,7 +91,6 @@ register "$B"
 send "$B" b-1 "$(iso -3)" 18
 expect 200 '"outcome":"applied"'
 say "sent 18%"
-wait_for_alert_check
 request GET /alerts
 expect 200
 B_ALERT=$(alert_id_of "$B")
@@ -109,14 +102,12 @@ say "acknowledged"
 send "$B" b-2 "$(iso -2)" 15
 expect 200 '"outcome":"applied"'
 say "sent 15%"
-wait_for_alert_check
 request GET /alerts
 [ "$(alert_count_of "$B")" = "1" ] || fail "expected still exactly one unresolved alert for $B"
 say "still one alert, not a second one"
 send "$B" b-3 "$(iso -1)" 30
 expect 200 '"outcome":"applied"'
 say "sent 30%"
-wait_for_alert_check
 request GET "/alerts?state=terminal"
 entry=$(alert_entry "$B_ALERT")
 case "$entry" in *'"status":"RESOLVED"'*) ;; *) fail "expected alert $B_ALERT to be RESOLVED" ;; esac
@@ -164,7 +155,6 @@ E_LOW=$(iso -1)
 send "$E" e-1 "$E_LOW" 15
 expect 200 '"outcome":"applied"'
 say "sent 15%"
-wait_for_alert_check
 request GET /alerts
 E_ALERT=$(alert_id_of "$E")
 [ -n "$E_ALERT" ] || fail "expected an open alert for $E"
@@ -184,14 +174,12 @@ say "a resend is still a duplicate"
 request POST "/robots/$E/activate"
 expect 200 '"lifecycle":"ACTIVE"' '"battery_health":"LOW"'
 say "reactivated, still LOW"
-wait_for_alert_check
 request GET /alerts
 [ "$(alert_count_of "$E")" = "0" ] || fail "expected no alert before a fresh snapshot"
 say "no alert yet: no snapshot since reactivation"
 send "$E" e-3 "$(iso 0)" 18
 expect 200 '"outcome":"applied"'
 say "sent a fresh 18%"
-wait_for_alert_check
 request GET /alerts
 [ "$(alert_count_of "$E")" = "1" ] || fail "expected a new alert after the fresh low snapshot"
 say "a new alert opened"

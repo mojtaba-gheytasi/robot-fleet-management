@@ -96,8 +96,8 @@ func TestAcknowledgeTwiceDoesNotWriteTheRowAgain(t *testing.T) {
 func TestAcknowledgeAResolvedAlertIsRejected(t *testing.T) {
 	db := startPostgres(t)
 	alertID := openAlert(t, db, "robot-101")
-	setBatteryHealth(t, db, "robot-101", domain.BatteryHealthNormal)
-	_, err := postgres.NewAlertReconciler(db).Reconcile(context.Background(), checkedAt.Add(time.Minute))
+	_, err := application.NewRecordTelemetry(postgres.NewRobotRepository(db), clockAt(checkedAt.Add(time.Minute))).
+		Execute(context.Background(), reading("robot-101", "obs-recovered", 2, 30))
 	require.NoError(t, err)
 
 	_, err = application.NewAcknowledgeAlert(postgres.NewAlertRepository(db), clockAt(checkedAt.Add(2*time.Minute))).
@@ -121,36 +121,29 @@ func TestAcknowledgeAnAlertThatDoesNotExist(t *testing.T) {
 	}
 }
 
+// Many alerts make every interleaving likely; alert_lifecycle_test.go forces each order once.
 func TestAcknowledgeRacingAResolutionLosesNoUpdate(t *testing.T) {
 	ctx := context.Background()
 	db := startPostgres(t)
 	alerts := postgres.NewAlertRepository(db)
-	reconciler := postgres.NewAlertReconciler(db)
+	robots := postgres.NewRobotRepository(db)
+	clock := increasingClock()
 
 	for round := range 5 {
-		alertIDs := make([]domain.AlertID, 0, 20)
+		alertIDs := make(map[domain.RobotID]domain.AlertID)
 		for i := range 20 {
-			id := domain.RobotID(fmt.Sprintf("robot-%d-%d", round, i))
-			robotWithBatteryHealth(t, db, id, domain.BatteryHealthLow)
+			robotID := domain.RobotID(fmt.Sprintf("robot-%d-%d", round, i))
+			alertIDs[robotID] = openAlert(t, db, robotID)
 		}
-		_, err := reconciler.Reconcile(ctx, checkedAt)
-		require.NoError(t, err)
-		unresolved, err := alerts.List(ctx, false, 200)
-		require.NoError(t, err)
-		for _, alert := range unresolved {
-			alertIDs = append(alertIDs, alert.ID())
-		}
-		_, err = db.Exec(`UPDATE robots SET battery_health = 'NORMAL'`)
-		require.NoError(t, err)
 
 		acknowledged := make(map[domain.AlertID]bool)
 		var mutex sync.Mutex
 		var wait sync.WaitGroup
-		for _, alertID := range alertIDs {
-			wait.Add(1)
+		for robotID, alertID := range alertIDs {
+			wait.Add(2)
 			go func() {
 				defer wait.Done()
-				_, err := application.NewAcknowledgeAlert(alerts, clockAt(checkedAt.Add(time.Second))).Execute(ctx, string(alertID))
+				_, err := application.NewAcknowledgeAlert(alerts, clock).Execute(ctx, string(alertID))
 				if err == nil {
 					mutex.Lock()
 					acknowledged[alertID] = true
@@ -159,28 +152,33 @@ func TestAcknowledgeRacingAResolutionLosesNoUpdate(t *testing.T) {
 				}
 				assert.ErrorIs(t, err, domain.ErrAlertTerminal)
 			}()
+			go func() {
+				defer wait.Done()
+				_, err := application.NewRecordTelemetry(robots, clock).Execute(ctx, reading(robotID, "obs-recovered", 2, 30))
+				assert.NoError(t, err)
+			}()
 		}
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			_, err := reconciler.Reconcile(ctx, checkedAt.Add(time.Second))
-			assert.NoError(t, err)
-		}()
 		wait.Wait()
 
 		for _, alertID := range alertIDs {
-			status, acknowledgedAt := alertState(t, db, alertID)
-			assert.Equal(t, "RESOLVED", status, "a resolution was overwritten")
-			assert.Equal(t, acknowledged[alertID], acknowledgedAt.Valid, "acknowledged_at does not match the outcome")
+			alert := storedAlert(t, db, alertID)
+			assert.Equal(t, "RESOLVED", alert.status, "a resolution was overwritten")
+			assert.Equal(t, acknowledged[alertID], alert.acknowledgedAt.Valid, "acknowledged_at does not match the outcome")
+			if alert.acknowledgedAt.Valid {
+				assert.False(t, alert.endedAt.Time.Before(alert.acknowledgedAt.Time), "ended before it was acknowledged")
+			}
 		}
 	}
 }
 
+// openAlert registers the robot and sends a low reading received at checkedAt.
 func openAlert(t *testing.T, db *sql.DB, robotID domain.RobotID) domain.AlertID {
 	t.Helper()
 
-	robotWithBatteryHealth(t, db, robotID, domain.BatteryHealthLow)
-	_, err := postgres.NewAlertReconciler(db).Reconcile(context.Background(), checkedAt)
+	robots := postgres.NewRobotRepository(db)
+	require.NoError(t, robots.Create(context.Background(), newRobot(t, robotID, "site-north")))
+	_, err := application.NewRecordTelemetry(robots, clockAt(checkedAt)).
+		Execute(context.Background(), reading(robotID, "obs-low", 1, 18))
 	require.NoError(t, err)
 
 	var id string
@@ -216,8 +214,9 @@ func clockAt(now time.Time) application.Clock {
 func seedAlerts(t *testing.T, db *sql.DB) {
 	t.Helper()
 
+	robots := postgres.NewRobotRepository(db)
 	for _, id := range []domain.RobotID{"robot-101", "robot-102", "robot-103"} {
-		robotWithBatteryHealth(t, db, id, domain.BatteryHealthLow)
+		require.NoError(t, robots.Create(context.Background(), newRobot(t, id, "site-north")))
 	}
 
 	_, err := db.Exec(`

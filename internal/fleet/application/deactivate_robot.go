@@ -22,11 +22,23 @@ func (useCase *DeactivateRobot) Execute(ctx context.Context, robotID string) (Ro
 	var state RobotState
 
 	err := useCase.robots.WithLockedRobot(ctx, domain.RobotID(robotID), func(robot *domain.Robot, tx RobotTx) error {
-		now := useCase.clock()
 		robot.Deactivate()
 
-		if _, err := tx.CloseUnresolvedAlerts(ctx, domain.ClosureReasonRobotDeactivated, now); err != nil {
-			return fmt.Errorf("close alerts: %w", err)
+		alert, err := tx.FindUnresolvedAlert(ctx)
+		if err != nil {
+			return fmt.Errorf("find unresolved alert: %w", err)
+		}
+
+		// Read after the alert is locked, like every alert time.
+		now := useCase.clock()
+
+		if alert != nil {
+			if err := alert.Close(domain.ClosureReasonRobotDeactivated, now); err != nil {
+				return err
+			}
+			if err := tx.SaveAlert(ctx, alert); err != nil {
+				return fmt.Errorf("save alert: %w", err)
+			}
 		}
 
 		state = robotStateAt(robot, now)

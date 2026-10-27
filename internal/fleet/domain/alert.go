@@ -24,15 +24,32 @@ type ClosureReason string
 
 const ClosureReasonRobotDeactivated ClosureReason = "ROBOT_DEACTIVATED"
 
+// A zero acknowledgedAt or endedAt means it has not happened.
 type Alert struct {
 	id             AlertID
 	robotID        RobotID
 	kind           AlertKind
 	status         AlertStatus
 	openedAt       time.Time
-	acknowledgedAt *time.Time
-	endedAt        *time.Time
+	acknowledgedAt time.Time
+	endedAt        time.Time
 	closureReason  ClosureReason
+}
+
+func NewLowBatteryAlert(id AlertID, robotID RobotID, openedAt time.Time) (*Alert, error) {
+	alert := &Alert{
+		id:       id,
+		robotID:  robotID,
+		kind:     AlertKindLowBattery,
+		status:   AlertStatusOpen,
+		openedAt: openedAt,
+	}
+
+	if err := alert.validate(); err != nil {
+		return nil, err
+	}
+
+	return alert, nil
 }
 
 func ReconstituteAlert(
@@ -46,14 +63,18 @@ func ReconstituteAlert(
 	closureReason ClosureReason,
 ) (*Alert, error) {
 	alert := &Alert{
-		id:             id,
-		robotID:        robotID,
-		kind:           kind,
-		status:         status,
-		openedAt:       openedAt,
-		acknowledgedAt: acknowledgedAt,
-		endedAt:        endedAt,
-		closureReason:  closureReason,
+		id:            id,
+		robotID:       robotID,
+		kind:          kind,
+		status:        status,
+		openedAt:      openedAt,
+		closureReason: closureReason,
+	}
+	if acknowledgedAt != nil {
+		alert.acknowledgedAt = *acknowledgedAt
+	}
+	if endedAt != nil {
+		alert.endedAt = *endedAt
 	}
 
 	if err := alert.validate(); err != nil {
@@ -63,17 +84,53 @@ func ReconstituteAlert(
 	return alert, nil
 }
 
-func (alert *Alert) Acknowledge(now time.Time) error {
+// Acknowledge is idempotent: acknowledging again keeps the first time.
+func (alert *Alert) Acknowledge(at time.Time) error {
 	switch alert.status {
 	case AlertStatusOpen:
-		alert.status = AlertStatusAcknowledged
-		alert.acknowledgedAt = &now
-		return nil
+		acknowledged := *alert
+		acknowledged.status = AlertStatusAcknowledged
+		acknowledged.acknowledgedAt = at
+		return alert.become(acknowledged)
 	case AlertStatusAcknowledged:
 		return nil
 	default:
 		return fmt.Errorf("%w: it is %s", ErrAlertTerminal, alert.status)
 	}
+}
+
+// Resolve ends the alert because the battery recovered. It keeps any acknowledgement.
+func (alert *Alert) Resolve(at time.Time) error {
+	return alert.end(AlertStatusResolved, "", at)
+}
+
+// Close ends the alert without a recovery. It keeps any acknowledgement.
+func (alert *Alert) Close(reason ClosureReason, at time.Time) error {
+	return alert.end(AlertStatusClosed, reason, at)
+}
+
+func (alert *Alert) end(status AlertStatus, reason ClosureReason, at time.Time) error {
+	if alert.isTerminal() {
+		return fmt.Errorf("%w: it is %s", ErrAlertTerminal, alert.status)
+	}
+
+	ended := *alert
+	ended.status = status
+	ended.endedAt = at
+	ended.closureReason = reason
+
+	return alert.become(ended)
+}
+
+// become checks the next state before taking it, so a failed transition changes nothing.
+func (alert *Alert) become(next Alert) error {
+	if err := next.validate(); err != nil {
+		return err
+	}
+
+	*alert = next
+
+	return nil
 }
 
 func (alert *Alert) ID() AlertID {
@@ -92,16 +149,20 @@ func (alert *Alert) Status() AlertStatus {
 	return alert.status
 }
 
+func (alert *Alert) isTerminal() bool {
+	return alert.status == AlertStatusResolved || alert.status == AlertStatusClosed
+}
+
 func (alert *Alert) OpenedAt() time.Time {
 	return alert.openedAt
 }
 
 func (alert *Alert) AcknowledgedAt() (time.Time, bool) {
-	return optionalTime(alert.acknowledgedAt)
+	return alert.acknowledgedAt, alert.acknowledgedAt.IsZero() == false
 }
 
 func (alert *Alert) EndedAt() (time.Time, bool) {
-	return optionalTime(alert.endedAt)
+	return alert.endedAt, alert.endedAt.IsZero() == false
 }
 
 func (alert *Alert) ClosureReason() ClosureReason {
@@ -117,23 +178,47 @@ func (alert *Alert) validate() error {
 		return fmt.Errorf("%w: unknown kind %q", ErrInvalidAlert, alert.kind)
 	}
 
-	switch alert.status {
-	case AlertStatusOpen, AlertStatusAcknowledged, AlertStatusResolved, AlertStatusClosed:
-	default:
-		return fmt.Errorf("%w: unknown status %q", ErrInvalidAlert, alert.status)
-	}
-
 	if alert.openedAt.IsZero() {
 		return fmt.Errorf("%w: opening time is required", ErrInvalidAlert)
 	}
 
-	return nil
-}
+	acknowledged := alert.acknowledgedAt.IsZero() == false
+	ended := alert.endedAt.IsZero() == false
 
-func optionalTime(value *time.Time) (time.Time, bool) {
-	if value == nil {
-		return time.Time{}, false
+	switch alert.status {
+	case AlertStatusOpen:
+		if acknowledged || ended {
+			return fmt.Errorf("%w: an open alert has no acknowledgement or end time", ErrInvalidAlert)
+		}
+	case AlertStatusAcknowledged:
+		if acknowledged == false || ended {
+			return fmt.Errorf("%w: an acknowledged alert has an acknowledgement and no end time", ErrInvalidAlert)
+		}
+	case AlertStatusResolved, AlertStatusClosed:
+		if ended == false {
+			return fmt.Errorf("%w: a %s alert has an end time", ErrInvalidAlert, alert.status)
+		}
+	default:
+		return fmt.Errorf("%w: unknown status %q", ErrInvalidAlert, alert.status)
 	}
 
-	return *value, true
+	wantReason := ClosureReason("")
+	if alert.status == AlertStatusClosed {
+		wantReason = ClosureReasonRobotDeactivated
+	}
+	if alert.closureReason != wantReason {
+		return fmt.Errorf("%w: closure reason %q does not fit status %s", ErrInvalidAlert, alert.closureReason, alert.status)
+	}
+
+	if acknowledged && alert.acknowledgedAt.Before(alert.openedAt) {
+		return fmt.Errorf("%w: acknowledged before it was opened", ErrInvalidAlert)
+	}
+	if ended && alert.endedAt.Before(alert.openedAt) {
+		return fmt.Errorf("%w: ended before it was opened", ErrInvalidAlert)
+	}
+	if acknowledged && ended && alert.acknowledgedAt.After(alert.endedAt) {
+		return fmt.Errorf("%w: acknowledged after it ended", ErrInvalidAlert)
+	}
+
+	return nil
 }

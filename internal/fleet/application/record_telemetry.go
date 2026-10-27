@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/mojtaba-gheytasi/robot-fleet-management/internal/fleet/domain"
 )
 
@@ -66,6 +68,13 @@ func (useCase *RecordTelemetry) Execute(
 				return nil
 			}
 
+			// Locked before the clock is read, so an acknowledgement that held the
+			// alert is never stamped later than this observation's resolution.
+			alert, err := tx.FindUnresolvedAlert(ctx)
+			if err != nil {
+				return fmt.Errorf("find unresolved alert: %w", err)
+			}
+
 			receivedAt := useCase.clock()
 			recorded, err := robot.ApplyObservation(observation, receivedAt)
 			if err != nil {
@@ -76,11 +85,16 @@ func (useCase *RecordTelemetry) Execute(
 				return fmt.Errorf("add observation: %w", err)
 			}
 
-			outcome = TelemetryOutcomeApplied
 			if recorded == domain.ObservationSuperseded {
 				outcome = TelemetryOutcomeSuperseded
+				return nil
 			}
 
+			if err := followBatteryHealth(ctx, tx, robot, alert, receivedAt); err != nil {
+				return err
+			}
+
+			outcome = TelemetryOutcomeApplied
 			return nil
 		},
 	)
@@ -89,6 +103,34 @@ func (useCase *RecordTelemetry) Execute(
 	}
 
 	return RecordTelemetryResult{Outcome: outcome}, nil
+}
+
+// followBatteryHealth keeps the rule across Robot and Alert after each applied observation:
+// a LOW robot has one unresolved alert, any other robot has none. Checking every applied
+// observation, not only a change of health, also opens the alert for the first LOW reading
+// after a reactivation (REG-07).
+func followBatteryHealth(ctx context.Context, tx RobotTx, robot *domain.Robot, alert *domain.Alert, at time.Time) error {
+	low := robot.BatteryHealth() == domain.BatteryHealthLow
+
+	switch {
+	case low && alert == nil:
+		opened, err := domain.NewLowBatteryAlert(domain.AlertID(uuid.NewString()), robot.ID(), at)
+		if err != nil {
+			return err
+		}
+		if err := tx.AddAlert(ctx, opened); err != nil {
+			return fmt.Errorf("add alert: %w", err)
+		}
+	case low == false && alert != nil:
+		if err := alert.Resolve(at); err != nil {
+			return err
+		}
+		if err := tx.SaveAlert(ctx, alert); err != nil {
+			return fmt.Errorf("save alert: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func observationFrom(command RecordTelemetryCommand) (domain.Observation, error) {

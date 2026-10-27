@@ -12,20 +12,33 @@ import (
 	"github.com/mojtaba-gheytasi/robot-fleet-management/internal/fleet/domain"
 )
 
-func TestDeactivateRobotClosesItsAlertsInTheSameTransaction(t *testing.T) {
+func TestDeactivateRobotClosesItsAlertInTheSameTransaction(t *testing.T) {
 	robots := reportingRobot(t)
+	require.Len(t, robots.alerts, 1, "the 18.5% reading opened an alert")
 	deactivateAt := fixedNow.Add(time.Hour)
 
 	state, err := application.NewDeactivateRobot(robots, clockAt(deactivateAt)).Execute(context.Background(), "robot-101")
 	require.NoError(t, err)
 
 	assert.Equal(t, domain.LifecycleInactive, state.Robot.Lifecycle())
-	require.Len(t, robots.closedAlerts, 1)
-	assert.Equal(t, domain.RobotID("robot-101"), robots.closedAlerts[0].robotID)
-	assert.Equal(t, domain.ClosureReasonRobotDeactivated, robots.closedAlerts[0].reason)
-	assert.Equal(t, deactivateAt, robots.closedAlerts[0].at)
+	require.Len(t, robots.alerts, 1)
+	closed := robots.alerts[0]
+	assert.Equal(t, domain.AlertStatusClosed, closed.Status())
+	assert.Equal(t, domain.ClosureReasonRobotDeactivated, closed.ClosureReason())
+	endedAt, _ := closed.EndedAt()
+	assert.Equal(t, deactivateAt, endedAt)
 	_, ok := state.Robot.LatestObservation()
 	assert.True(t, ok, "the last reading stays visible")
+}
+
+func TestDeactivateRobotWithoutAnAlertClosesNothing(t *testing.T) {
+	robots := newFakeRobots()
+	robots.store(t, "robot-101", "site-north", domain.LifecycleActive, fixedNow)
+
+	_, err := application.NewDeactivateRobot(robots, clockAt(fixedNow.Add(time.Hour))).Execute(context.Background(), "robot-101")
+	require.NoError(t, err)
+
+	assert.Empty(t, robots.alerts)
 }
 
 func TestActivateRobotRecordsTheActivationTime(t *testing.T) {

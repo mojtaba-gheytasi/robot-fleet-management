@@ -95,25 +95,23 @@ func seedSummaryFleet(t *testing.T) *sql.DB {
 
 	db := startPostgres(t)
 	robots := postgres.NewRobotRepository(db)
-	report := func(id domain.RobotID, site domain.SiteID, receivedBefore time.Duration) {
+	report := func(id domain.RobotID, site domain.SiteID, receivedBefore time.Duration, percent float64) {
 		require.NoError(t, robots.Create(context.Background(), newRobot(t, id, site)))
 		if receivedBefore >= 0 {
-			reading := applied(t, "obs-1", registeredAt.Add(time.Second), 50, summaryAt.Add(-receivedBefore))
+			reading := applied(t, "obs-1", registeredAt.Add(time.Second), percent, summaryAt.Add(-receivedBefore))
 			addObservation(t, robots, id, reading, domain.ObservationApplied)
 		}
 	}
 
-	report("north-online", "site-north", 5*time.Second)
-	report("north-boundary", "site-north", 10*time.Second)
-	report("north-stale", "site-north", 20*time.Second)
-	report("north-silent", "site-north", -1)
-	report("north-low", "site-north", time.Second)
-	report("south-stale", "site-south", time.Minute)
-	report("south-inactive", "site-south", time.Second)
+	report("north-online", "site-north", 5*time.Second, 50)
+	report("north-boundary", "site-north", 10*time.Second, 50)
+	report("north-stale", "site-north", 20*time.Second, 50)
+	report("north-silent", "site-north", -1, 0)
+	report("north-low", "site-north", time.Second, 15)
+	report("south-stale", "site-south", time.Minute, 50)
+	report("south-inactive", "site-south", time.Second, 15)
 
-	_, err := db.Exec(`UPDATE robots SET battery_health = 'LOW' WHERE id IN ('north-low', 'south-inactive')`)
-	require.NoError(t, err)
-	_, err = db.Exec(`UPDATE robots SET lifecycle = 'INACTIVE' WHERE id = 'south-inactive'`)
+	_, err := db.Exec(`UPDATE robots SET lifecycle = 'INACTIVE' WHERE id = 'south-inactive'`)
 	require.NoError(t, err)
 	_, err = db.Exec(`
 		INSERT INTO alerts (robot_id, kind, status, opened_at, ended_at) VALUES

@@ -188,17 +188,17 @@ func TestQueriesUseTheirIndexes(t *testing.T) {
 	_, err = connection.ExecContext(ctx, `SET enable_seqscan = off`)
 	require.NoError(t, err)
 
-	const current, history = "telemetry_observations_current_idx", "telemetry_observations_history_idx"
+	const current, history, unresolved = "telemetry_observations_current_idx", "telemetry_observations_history_idx", "alerts_one_unresolved_idx"
 	queries := map[string]struct {
 		query     string
 		args      []any
 		wantIndex string
 	}{
-		"find by id":    {postgres.FindRobotByIDQuery, []any{"robot-101"}, current},
-		"list":          {postgres.ListRobotsQuery, []any{nil}, current},
-		"open alerts":   {postgres.OpenLowBatteryAlertsQuery, []any{registeredAt}, current},
-		"fleet summary": {postgres.FleetSummaryQuery, []any{nil, registeredAt}, current},
-		"history":       {postgres.ObservationHistoryQuery, []any{"robot-101", 50}, history},
+		"find by id":       {postgres.FindRobotByIDQuery, []any{"robot-101"}, current},
+		"list":             {postgres.ListRobotsQuery, []any{nil}, current},
+		"unresolved alert": {postgres.LockUnresolvedAlertQuery, []any{"robot-101"}, unresolved},
+		"fleet summary":    {postgres.FleetSummaryQuery, []any{nil, registeredAt}, current},
+		"history":          {postgres.ObservationHistoryQuery, []any{"robot-101", 50}, history},
 	}
 
 	for name, tt := range queries {
@@ -465,8 +465,10 @@ func TestDeactivateRollsBackTogetherWithTheAlertClose(t *testing.T) {
 
 	err := repository.WithLockedRobot(ctx, "robot-101", func(robot *domain.Robot, tx application.RobotTx) error {
 		robot.Deactivate()
-		_, err := tx.CloseUnresolvedAlerts(ctx, domain.ClosureReasonRobotDeactivated, checkedAt)
+		alert, err := tx.FindUnresolvedAlert(ctx)
 		require.NoError(t, err)
+		require.NoError(t, alert.Close(domain.ClosureReasonRobotDeactivated, checkedAt.Add(time.Minute)))
+		require.NoError(t, tx.SaveAlert(ctx, alert))
 
 		return failure
 	})
@@ -515,6 +517,15 @@ func increasingClock() application.Clock {
 	}
 }
 
+// reading is a report from robotID observed at registeredAt plus second.
+func reading(robotID domain.RobotID, id string, second int, percent float64) application.RecordTelemetryCommand {
+	command := telemetryCommand(id, registeredAt.Add(time.Duration(second)*time.Second))
+	command.RobotID = string(robotID)
+	command.BatteryPercent = percent
+
+	return command
+}
+
 func telemetryCommand(id string, observedAt time.Time) application.RecordTelemetryCommand {
 	return application.RecordTelemetryCommand{
 		RobotID:        "robot-101",
@@ -539,6 +550,20 @@ func addObservation(
 	err := repository.WithLockedRobot(context.Background(), robotID, func(_ *domain.Robot, log application.RobotTx) error {
 		return log.AddObservation(context.Background(), reading.Observation, reading.ReceivedAt, outcome)
 	})
+	require.NoError(t, err)
+
+	// The insert skips ApplyObservation, so set a health the latest reading allows,
+	// or the robot would no longer load.
+	_, err = repository.DB().ExecContext(context.Background(), `
+		UPDATE robots r
+		SET battery_health = CASE WHEN o.battery_percent < 20 THEN 'LOW' ELSE 'NORMAL' END
+		FROM (
+			SELECT battery_percent FROM telemetry_observations
+			WHERE robot_id = $1 AND outcome = 'APPLIED'
+			ORDER BY observed_at DESC
+			LIMIT 1
+		) o
+		WHERE r.id = $1`, string(robotID))
 	require.NoError(t, err)
 }
 

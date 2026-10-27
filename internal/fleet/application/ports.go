@@ -15,31 +15,25 @@ type RobotRepository interface {
 	// List with a nil siteID returns every site.
 	List(ctx context.Context, siteID *domain.SiteID) ([]*domain.Robot, error)
 
-	// WithLockedRobot runs fn while the robot row is locked and saves the robot's changes with it;
-	// an error from fn rolls everything back.
+	// WithLockedRobot runs fn while the robot row is locked, then saves the robot's lifecycle,
+	// activation time and battery health. Observations and alerts are written through tx.
+	// Everything commits together; an error from fn rolls everything back.
 	WithLockedRobot(ctx context.Context, id domain.RobotID, fn func(robot *domain.Robot, tx RobotTx) error) error
 }
 
 // RobotTx is what may be done in the transaction that holds the robot's lock.
+// Locks are always taken robot first, then alert, so they cannot deadlock.
 type RobotTx interface {
 	FindObservation(ctx context.Context, id domain.ObservationID) (domain.Observation, bool, error)
 	AddObservation(ctx context.Context, observation domain.Observation, receivedAt time.Time, outcome domain.ObservationOutcome) error
-	CloseUnresolvedAlerts(ctx context.Context, reason domain.ClosureReason, now time.Time) (int, error)
+
+	// FindUnresolvedAlert locks and returns the robot's unresolved alert, or nil if it has none.
+	FindUnresolvedAlert(ctx context.Context) (*domain.Alert, error)
+	AddAlert(ctx context.Context, alert *domain.Alert) error
+	SaveAlert(ctx context.Context, alert *domain.Alert) error
 }
 
 type Clock func() time.Time
-
-type AlertReconciler interface {
-	Reconcile(ctx context.Context, now time.Time) (AlertReconciliation, error)
-}
-
-type AlertReconciliation struct {
-	// Skipped means another copy of the service was already running the check.
-	Skipped  bool
-	Opened   int
-	Resolved int
-	Closed   int
-}
 
 type AlertRepository interface {
 	List(ctx context.Context, terminal bool, limit int) ([]*domain.Alert, error)

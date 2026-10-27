@@ -95,6 +95,14 @@ func TestNewObservationRejectsInvalidData(t *testing.T) {
 	}
 }
 
+func TestNewObservationRejectsAnOperatingModeThatSkippedItsConstructor(t *testing.T) {
+	for _, mode := range []domain.OperatingMode{"BOGUS", ""} {
+		_, err := domain.NewObservation("obs-1", now, battery(t, 50), position(t), mode)
+
+		require.ErrorIs(t, err, domain.ErrInvalidObservation, mode)
+	}
+}
+
 func newObservation(t *testing.T, id domain.ObservationID, observedAt time.Time, percent float64) domain.Observation {
 	t.Helper()
 

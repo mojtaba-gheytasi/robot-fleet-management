@@ -20,7 +20,9 @@ func (useCase *ActivateRobot) Execute(ctx context.Context, robotID string) (Robo
 
 	err := useCase.robots.WithLockedRobot(ctx, domain.RobotID(robotID), func(robot *domain.Robot, _ RobotTx) error {
 		now := useCase.clock()
-		robot.Activate(now)
+		if err := robot.Activate(now); err != nil {
+			return err
+		}
 
 		state = robotStateAt(robot, now)
 		return nil

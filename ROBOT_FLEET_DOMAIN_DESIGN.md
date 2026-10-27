@@ -43,6 +43,7 @@ Three separate decisions, each with its own reason:
 | Battery health | `UNKNOWN`, `NORMAL` or `LOW`, with a buffer: low below 20%, recovered at 25% |
 | Connectivity | `UNKNOWN` before the first applied observation, then `ONLINE` if the last applied one was received within 10 seconds, otherwise `STALE`. Duplicates and superseded observations do not refresh it. It says whether current reports are arriving, not whether the robot is physically off |
 | Lifecycle | `ACTIVE` or `INACTIVE`: whether an operator has the robot in service |
+| Low-battery episode | A run of applied observations that leave an active robot `LOW`. It starts with the first such observation and ends at recovery or deactivation. Each episode has its own alert |
 | Resolved | Alert ended because the battery recovered |
 | Closed | Alert ended because the robot was deactivated; not a recovery |
 
@@ -60,6 +61,8 @@ Three separate decisions, each with its own reason:
 
 **Behaviour:** `Activate`, `Deactivate`, `ApplyObservation`, `ConnectivityAt(now)`.
 
+**Valid state** (checked on construction and when loaded from storage): activation is not before registration; with no applied observation, health is `UNKNOWN`; with one, health fits its battery under the table below (below 20% always `LOW`, 25% or more always `NORMAL`, either in between). An inactive or reactivated robot keeps its last applied observation.
+
 **Battery health transitions** (on each applied observation):
 
 | Current health | Battery reading | New health |
@@ -73,38 +76,61 @@ Observation history is not part of the aggregate. It is stored separately, so th
 
 ### Alert aggregate
 
-**Owns:** robot reference, status (`OPEN`, `ACKNOWLEDGED`, `RESOLVED`, `CLOSED`), timestamps, closure reason.
+**Owns:** robot reference, status (`OPEN`, `ACKNOWLEDGED`, `RESOLVED`, `CLOSED`), timestamps, closure reason. One alert is one low-battery episode.
 
-**Rules:** acknowledge only from `OPEN` (repeating it is a no-op); `RESOLVED` and `CLOSED` are final.
+**Behaviour:** `NewLowBatteryAlert` opens it, `Acknowledge` is driven by an operator, `Resolve` and `Close` end it. Every transition is a method on the aggregate; SQL only stores the result.
 
-**Behaviour:** `Acknowledge` is the only behaviour driven by a user. Opening, resolving and closing are applied by the alert reconciliation (below).
+**Rules:**
+
+- Acknowledge only from `OPEN`; repeating it is a no-op and keeps the first time.
+- Resolve or close only an unresolved alert. Both keep any acknowledgement.
+- `RESOLVED` and `CLOSED` are final: nothing changes them again.
+- The fields always fit the status:
+
+| Status | `acknowledged_at` | `ended_at` | `closure_reason` |
+|---|---|---|---|
+| `OPEN` | none | none | none |
+| `ACKNOWLEDGED` | set | none | none |
+| `RESOLVED` | optional | set | none |
+| `CLOSED` | optional | set | `ROBOT_DEACTIVATED` |
+
+- Times never run backwards: acknowledged and ended are not before opened, and acknowledged is not after ended.
 
 **Status transitions:**
 
 | Current status | Trigger | New status |
 |---|---|---|
-| none | Battery `LOW`, robot active (background check) | `OPEN` |
+| none | Applied observation leaves an active robot `LOW` | `OPEN` |
 | `OPEN` | Acknowledge | `ACKNOWLEDGED` |
 | `ACKNOWLEDGED` | Acknowledge | `ACKNOWLEDGED` (no-op) |
-| `OPEN` / `ACKNOWLEDGED` | Battery `NORMAL` (background check) | `RESOLVED` |
+| `OPEN` / `ACKNOWLEDGED` | Applied observation leaves the robot `NORMAL` | `RESOLVED` |
 | `OPEN` / `ACKNOWLEDGED` | Robot deactivated | `CLOSED` |
-| `RESOLVED` / `CLOSED` | Acknowledge | Conflict; no change |
+| `RESOLVED` / `CLOSED` | Acknowledge, resolve or close | Rejected; no change |
+
+**Timestamps** are server times from one injected clock, never the robot's `observed_at`. Each use case reads the clock once, after it holds every lock it needs, so stored times follow the order the changes were made.
+
+- `opened_at`: the `received_at` of the observation that started the episode.
+- `acknowledged_at`: when the operator's acknowledgement was recorded.
+- `ended_at`: for `RESOLVED`, the `received_at` of the observation that recovered; for `CLOSED`, when the deactivation was recorded.
 
 ### Why two aggregates
 
-A robot's state changes every second from telemetry; an alert changes rarely, by a human acknowledging it. If alerts lived inside Robot, every acknowledgement would compete with telemetry and every observation would load alert history.
+Each aggregate protects rules that need only its own data. Robot: telemetry only when active, only newer observations become current, the 20% / 25% rule. Alert: its status machine and timestamps. An alert also has its own identity and history: operators list and acknowledge alerts directly, and a robot has many over its life.
+
+In one aggregate, an operator's acknowledgement would lock the robot and wait for its telemetry, which arrives every second. Kept apart, acknowledging locks only the alert. Robot transactions touch at most one alert, the unresolved one, and never load alert history.
 
 ### The rule across them
 
-**Alerts are a projection of robot state.** Every 5 seconds, a background check compares robot state with unresolved alerts in one transaction:
+**An active robot that is `LOW` has exactly one unresolved alert; any other robot has none.** Neither aggregate can hold this alone, so two application use cases keep it, each in one transaction under the robot's row lock:
 
-- Active, `LOW`, latest observation received after the robot's last activation, no unresolved alert → open one.
-- `NORMAL`, unresolved alert → resolve it.
-- `INACTIVE`, unresolved alert → close it. This is a safety net; deactivation already closes the alert immediately.
+- **RecordTelemetry**, after each applied observation. If the robot is `LOW` and has no unresolved alert, open one. If it is not `LOW` and has one, resolve it. Duplicate, superseded and rejected observations change no alert.
+- **DeactivateRobot.** Close the unresolved alert with `ROBOT_DEACTIVATED`.
 
-A robot has at most one unresolved low-battery alert. Neither aggregate can enforce this alone; a partial unique database index guarantees it, even if two checks overlap.
+Robot decides the battery health and Alert decides how it changes. The use case only connects them and commits both, or neither.
 
-Because `LOW` lasts until the battery charges back to 25%, a low-battery episode always outlasts the 5-second interval, so none is missed. Comparing state, rather than reacting to a "battery became low" event, also covers reactivation, where health may already be `LOW`.
+**Why no episode is missed.** The rule runs on every applied observation, not on a timer, so `60 → 18 → 30` opens and resolves an alert even within one second. A recovery always resolves the alert of its own episode, so a new episode starts with a new `OPEN` alert and never inherits an earlier acknowledgement. The rule compares state, not "health changed", so the first `LOW` reading after reactivation opens a new alert even though health was already `LOW`. Reactivation alone opens nothing.
+
+**Concurrency.** Locks are always taken robot row first, then alert row. Acknowledge takes only the alert row, so locks cannot form a cycle. Telemetry and deactivation of one robot take turns on its row lock. An acknowledgement and a resolution take turns on the alert row: whichever commits first wins, and the other sees its result (the resolution keeps the acknowledgement, or the acknowledgement gets `ALERT_TERMINAL`). A partial unique index also guarantees at most one unresolved alert per robot in the database.
 
 ### Site and value objects
 
@@ -116,8 +142,8 @@ Because `LOW` lasts until the battery charges back to 25%, a low-battery episode
 
 | Decision | Alternative | Why |
 |---|---|---|
-| Reconcile alerts in a background check every 5 s | Update alerts in the ingestion transaction | Ingestion only stores facts and answers quickly; alerts are derived and may lag a few seconds. Cost: alerts appear up to 5 s late. |
-| Set-based SQL to open, resolve and close alerts | Load and save each Alert aggregate | One statement per rule, cheap at any fleet size. `Acknowledge`, the user-driven rule, stays in the aggregate. |
+| Change alerts in the transaction of the applied observation or deactivation that causes them | A background check of current health every few seconds | A periodic check sees only the latest health, so a short episode is lost, and two episodes between checks merge into one alert. Cost: one lookup on a small index per new observation, and a short alert-row lock. |
+| Load the one unresolved alert and change it through the aggregate | Set-based SQL per rule | Alert owns every transition, and each transaction touches at most one alert, so loading it is cheap. |
 | Keep late observations as history | Reject them | Buffered data from a robot that was offline is real data |
 | Store battery health, compute connectivity on read | Store both | Hysteresis needs the previous value; connectivity depends on the current time |
 | Close alerts on deactivation | Leave them open | An inactive robot sends no telemetry, so its alert could never resolve |

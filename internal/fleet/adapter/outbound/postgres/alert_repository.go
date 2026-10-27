@@ -32,8 +32,18 @@ const (
 		WHERE id = $1
 		FOR UPDATE`
 
+	// Answered by alerts_one_unresolved_idx; see the EXPLAIN test.
+	lockUnresolvedAlertQuery = selectAlertsQuery + `
+		WHERE robot_id = $1 AND kind = 'LOW_BATTERY' AND status IN ('OPEN', 'ACKNOWLEDGED')
+		FOR UPDATE`
+
+	insertAlertQuery = `
+		INSERT INTO alerts (id, robot_id, kind, status, opened_at)
+		VALUES ($1, $2, $3, $4, $5)`
+
 	updateAlertQuery = `
-		UPDATE alerts SET status = $2, acknowledged_at = $3 WHERE id = $1`
+		UPDATE alerts SET status = $2, acknowledged_at = $3, ended_at = $4, closure_reason = $5
+		WHERE id = $1`
 
 	invalidTextRepresentation = "22P02"
 )
@@ -105,14 +115,37 @@ func (repository *AlertRepository) WithLockedAlert(
 	}
 
 	if alert.Status() != loadedStatus {
-		acknowledgedAt, _ := alert.AcknowledgedAt()
-		if _, err := tx.ExecContext(ctx, updateAlertQuery, string(id), string(alert.Status()), nullTime(acknowledgedAt)); err != nil {
-			return fmt.Errorf("update alert: %w", err)
+		if err := updateAlert(ctx, tx, alert); err != nil {
+			return err
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit transaction: %w", err)
+	}
+
+	return nil
+}
+
+func insertAlert(ctx context.Context, tx *sql.Tx, alert *domain.Alert) error {
+	_, err := tx.ExecContext(ctx, insertAlertQuery,
+		string(alert.ID()), string(alert.RobotID()), string(alert.Kind()), string(alert.Status()), alert.OpenedAt())
+	if err != nil {
+		return fmt.Errorf("insert alert: %w", err)
+	}
+
+	return nil
+}
+
+func updateAlert(ctx context.Context, tx *sql.Tx, alert *domain.Alert) error {
+	acknowledgedAt, _ := alert.AcknowledgedAt()
+	endedAt, _ := alert.EndedAt()
+	closureReason := sql.NullString{String: string(alert.ClosureReason()), Valid: alert.ClosureReason() != ""}
+
+	_, err := tx.ExecContext(ctx, updateAlertQuery,
+		string(alert.ID()), string(alert.Status()), nullTime(acknowledgedAt), nullTime(endedAt), closureReason)
+	if err != nil {
+		return fmt.Errorf("update alert: %w", err)
 	}
 
 	return nil
@@ -145,7 +178,7 @@ func scanAlert(row rowScanner) (*domain.Alert, error) {
 		domain.ClosureReason(closureReason.String),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("corrupt stored alert %s: %w", id, err)
+		return nil, corruptData("alert "+id, err)
 	}
 
 	return alert, nil

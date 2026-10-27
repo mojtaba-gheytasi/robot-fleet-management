@@ -48,10 +48,6 @@ const (
 	updateRobotQuery = `
 		UPDATE robots SET lifecycle = $2, activated_at = $3, battery_health = $4 WHERE id = $1`
 
-	closeUnresolvedAlertsQuery = `
-		UPDATE alerts SET status = 'CLOSED', closure_reason = $2, ended_at = $3
-		WHERE robot_id = $1 AND status IN ('OPEN', 'ACKNOWLEDGED')`
-
 	findObservationQuery = `
 		SELECT observation_id, observed_at, battery_percent, position_x, position_y, operating_mode
 		FROM telemetry_observations
@@ -235,7 +231,7 @@ func (log *robotTx) FindObservation(ctx context.Context, id domain.ObservationID
 
 	observation, err := observationFromRow(observationID, observedAt, batteryPercent, positionX, positionY, operatingMode)
 	if err != nil {
-		return domain.Observation{}, false, fmt.Errorf("corrupt stored observation %s: %w", observationID, err)
+		return domain.Observation{}, false, corruptData("observation "+observationID, err)
 	}
 
 	return observation, true, nil
@@ -268,18 +264,24 @@ func (log *robotTx) AddObservation(
 	return nil
 }
 
-func (log *robotTx) CloseUnresolvedAlerts(ctx context.Context, reason domain.ClosureReason, now time.Time) (int, error) {
-	result, err := log.tx.ExecContext(ctx, closeUnresolvedAlertsQuery, string(log.robotID), string(reason), now)
+func (log *robotTx) FindUnresolvedAlert(ctx context.Context) (*domain.Alert, error) {
+	alert, err := scanAlert(log.tx.QueryRowContext(ctx, lockUnresolvedAlertQuery, string(log.robotID)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
-		return 0, fmt.Errorf("close unresolved alerts: %w", err)
+		return nil, fmt.Errorf("lock unresolved alert: %w", err)
 	}
 
-	closed, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("read closed alert count: %w", err)
-	}
+	return alert, nil
+}
 
-	return int(closed), nil
+func (log *robotTx) AddAlert(ctx context.Context, alert *domain.Alert) error {
+	return insertAlert(ctx, log.tx, alert)
+}
+
+func (log *robotTx) SaveAlert(ctx context.Context, alert *domain.Alert) error {
+	return updateAlert(ctx, log.tx, alert)
 }
 
 type rowScanner interface {
@@ -323,7 +325,7 @@ func scanRobot(row rowScanner) (*domain.Robot, error) {
 			operatingMode.String,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("corrupt stored observation of robot %s: %w", robotID, err)
+			return nil, corruptData("observation of robot "+robotID, err)
 		}
 
 		latest = &domain.AppliedObservation{Observation: observation, ReceivedAt: receivedAt.Time}
@@ -339,7 +341,7 @@ func scanRobot(row rowScanner) (*domain.Robot, error) {
 		latest,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("corrupt stored robot %s: %w", robotID, err)
+		return nil, corruptData("robot "+robotID, err)
 	}
 
 	return robot, nil
@@ -369,6 +371,12 @@ func observationFromRow(
 	}
 
 	return domain.NewObservation(domain.ObservationID(observationID), observedAt, battery, position, mode)
+}
+
+// corruptData hides the domain error on purpose: stored data that breaks a rule is a
+// server fault, and must not reach the client as a bad request.
+func corruptData(what string, err error) error {
+	return fmt.Errorf("corrupt stored %s: %v", what, err)
 }
 
 func isUnknownSite(err error) bool {

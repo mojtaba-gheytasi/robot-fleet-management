@@ -1,9 +1,6 @@
 package config
 
-import (
-	"testing"
-	"time"
-)
+import "testing"
 
 func TestLoad(t *testing.T) {
 	tests := []struct {
@@ -15,27 +12,12 @@ func TestLoad(t *testing.T) {
 		{
 			name: "defaults the HTTP address to loopback",
 			env:  map[string]string{"DATABASE_URL": "postgres://db"},
-			want: Config{DatabaseURL: "postgres://db", HTTPServerAddress: "127.0.0.1:8080", AlertCheckInterval: 5 * time.Second},
+			want: Config{DatabaseURL: "postgres://db", HTTPServerAddress: "127.0.0.1:8080"},
 		},
 		{
 			name: "uses the configured HTTP address",
 			env:  map[string]string{"DATABASE_URL": "postgres://db", "HTTP_SERVER_ADDRESS": ":9090"},
-			want: Config{DatabaseURL: "postgres://db", HTTPServerAddress: ":9090", AlertCheckInterval: 5 * time.Second},
-		},
-		{
-			name: "uses the configured alert check interval",
-			env:  map[string]string{"DATABASE_URL": "postgres://db", "ALERT_CHECK_INTERVAL": "500ms"},
-			want: Config{DatabaseURL: "postgres://db", HTTPServerAddress: "127.0.0.1:8080", AlertCheckInterval: 500 * time.Millisecond},
-		},
-		{
-			name:    "rejects an alert check interval that is not a duration",
-			env:     map[string]string{"DATABASE_URL": "postgres://db", "ALERT_CHECK_INTERVAL": "5"},
-			wantErr: true,
-		},
-		{
-			name:    "rejects a zero alert check interval",
-			env:     map[string]string{"DATABASE_URL": "postgres://db", "ALERT_CHECK_INTERVAL": "0s"},
-			wantErr: true,
+			want: Config{DatabaseURL: "postgres://db", HTTPServerAddress: ":9090"},
 		},
 		{
 			name:    "requires DATABASE_URL",

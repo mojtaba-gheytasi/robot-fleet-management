@@ -11,7 +11,7 @@ The PRD defines *observable behavior*; the Domain Design defines *models and inv
 - One Go executable, one Fleet Management bounded context, one `fleet` module, ports and adapters.
 - HTTP requests are translated to application commands/queries; domain code does not depend on HTTP or SQL.
 - PostgreSQL is the only infrastructure dependency.
-- Ingestion stores the observation and updates robot state in one transaction. **Alerts are reconciled separately** by an in-process background check every 5 seconds.
+- Ingestion stores the observation, updates robot state and opens or resolves the robot's alert in one transaction. There is no background worker.
 - No simulator, frontend, authentication, authorization, message broker or microservices. `scripts/demo.sh` exercises the API with curl.
 - Bind to loopback by default; unauthenticated mutation endpoints must not be exposed publicly.
 
@@ -20,16 +20,15 @@ The PRD defines *observable behavior*; the Domain Design defines *models and inv
 ```text
 cmd/fleet/main.go                         # entry point: calls bootstrap.Run
 internal/
-  bootstrap/                              # load config, logger, DB; start HTTP server and alert check; graceful shutdown
+  bootstrap/                              # load config, logger, DB; start HTTP server; graceful shutdown
   fleet/
     domain/                               # Robot, Alert, Observation, BatteryLevel, Position, OperatingMode, errors
     application/                          # use cases, queries, ports.go, errors.go
     adapter/
       inbound/
         httpapi/                          # http.ServeMux routes, handlers, request/response DTOs, error mapping
-        alertcheck/                       # ticker that runs ReconcileAlerts every 5 s
       outbound/
-        postgres/                         # repositories, transactions, read queries, reconciliation SQL
+        postgres/                         # repositories, transactions, read queries
     wiring/                               # composition root: the only place that knows concrete adapters
   platform/
     config/  database/  httpserver/  observability/
@@ -42,9 +41,9 @@ docker-compose.yml  Makefile  .env.example
 
 ## 2. Domain implementation detail
 
-- `Robot`: ID, SiteID, Lifecycle, `ActivatedAt`, BatteryHealth, and its latest applied observation (with `received_at`). The repository loads the `robots` row plus the latest applied observation; measurements are not copied into `robots`. Behaviour: `Activate(now)`, `Deactivate()`, `ApplyObservation(obs, receivedAt)`, `ConnectivityAt(now)`.
-- `Observation` value object: ObservationID, ObservedAt, BatteryLevel, Position, OperatingMode.
-- `Alert`: ID, RobotID, kind `LOW_BATTERY`, status, timestamps, closure reason. Behaviour: `Acknowledge(now)`, the only user-driven transition. Open, resolve and close are applied by set-based reconciliation SQL.
+- `Robot`: ID, SiteID, Lifecycle, `ActivatedAt`, BatteryHealth, and its latest applied observation (with `received_at`). The repository loads the `robots` row plus the latest applied observation; measurements are not copied into `robots`. Behaviour: `Activate(now)`, `Deactivate()`, `ApplyObservation(obs, receivedAt)`, `ConnectivityAt(now)`. `ReconstituteRobot` rejects state the behaviour could never produce (see the domain design), so a corrupt row fails loudly as a server error.
+- `Observation` value object: ObservationID, ObservedAt, BatteryLevel, Position, OperatingMode. `NewObservation` and `ApplyObservation` both validate it, including an `OperatingMode` that skipped its constructor.
+- `Alert`: ID, RobotID, kind `LOW_BATTERY`, status, timestamps, closure reason. Behaviour: `NewLowBatteryAlert(id, robotID, at)`, `Acknowledge(at)`, `Resolve(at)`, `Close(reason, at)`. One `validate()` holds the status/field and time-order rules; constructors, reconstitution and every transition run it, and a failed transition changes nothing. Alert IDs are UUIDs made in the application layer.
 - `BatteryLevel`: canonical **two-decimal percentage** so duplicate detection compares reliably; reject excess precision rather than rounding.
 - `Position`: finite `float64` X/Y in site-local metres.
 - `OperatingMode`: `IDLE | WORKING | CHARGING | ERROR`.
@@ -69,7 +68,7 @@ Seeded by a migration. No site API.
 | `id` | `text PRIMARY KEY` |
 | `site_id` | `text NOT NULL REFERENCES sites(id)` |
 | `lifecycle` | `text NOT NULL CHECK IN ('ACTIVE','INACTIVE')` |
-| `activated_at` | `timestamptz NOT NULL` — set at registration and on each `INACTIVE → ACTIVE` |
+| `activated_at` | `timestamptz NOT NULL`, `CHECK (activated_at >= created_at)` — set at registration and on each `INACTIVE → ACTIVE` |
 | `battery_health` | `text NOT NULL DEFAULT 'UNKNOWN' CHECK IN ('UNKNOWN','NORMAL','LOW')` |
 | `created_at`, `updated_at` | `timestamptz NOT NULL` |
 
@@ -103,7 +102,7 @@ Primary key `(robot_id, observation_id)`; index `(robot_id, observed_at DESC)` f
 | `acknowledged_at`, `ended_at` | `timestamptz` nullable |
 | `closure_reason` | `text` nullable; `ROBOT_DEACTIVATED` only for `CLOSED` |
 
-**Partial unique index** `(robot_id, kind) WHERE status IN ('OPEN','ACKNOWLEDGED')` guarantees at most one unresolved alert per robot, even if two checks overlap. CHECK constraints tie `closure_reason` to `CLOSED`. No `acknowledged_by` without authentication.
+**Partial unique index** `(robot_id, kind) WHERE status IN ('OPEN','ACKNOWLEDGED')` guarantees at most one unresolved alert per robot, and answers the lookup of a robot's unresolved alert. CHECK constraints mirror the Alert rules: `closure_reason` only and always for `CLOSED`; which of `acknowledged_at`/`ended_at` each status has; and time order (`acknowledged_at`, `ended_at` ≥ `opened_at`; `acknowledged_at` ≤ `ended_at`). Migration `000008` adds the shape, order and `robots.activated_at` checks; it fails rather than repairs if existing rows break them. No `acknowledged_by` without authentication.
 
 ## 4. HTTP API contract
 
@@ -161,20 +160,21 @@ Success: `201` for a new registration, `200` otherwise. Transient database error
 
 ## 5. Use-case algorithms
 
-### RecordTelemetry (no alert work)
+### RecordTelemetry
 
 1. Validate the request; build a canonical Observation.
 2. Begin a transaction; `SELECT … FOR UPDATE` the robot row (`ROBOT_NOT_FOUND` if missing). The lock makes observations for one robot take turns; it is held for milliseconds and never blocks other robots.
 3. Look up `(robot_id, observation_id)`: same content → `duplicate`, no write; different content → `OBSERVATION_CONFLICT`. This runs before the active check, so a resend after deactivation is still `duplicate`.
-4. New ID: require `ACTIVE` (`ROBOT_INACTIVE`); reject `observed_at` more than 5 s ahead of the clock (`CLOCK_SKEW_EXCEEDED`).
-5. Read the latest applied observation (partial index). If one exists and `observed_at <= its observed_at`: insert as `SUPERSEDED`, commit, return `superseded`.
-6. Otherwise, including a robot's first observation: `Robot.ApplyObservation` computes the new battery health; insert as `APPLIED`; **update `robots.battery_health` only if it changed**; commit; return `applied`.
+4. `SELECT … FOR UPDATE` the robot's unresolved alert, if any. Then read the clock: this is `received_at`.
+5. New ID: require `ACTIVE` (`ROBOT_INACTIVE`); reject `observed_at` more than 5 s ahead of the clock (`CLOCK_SKEW_EXCEEDED`).
+6. Read the latest applied observation (partial index). If one exists and `observed_at <= its observed_at`: insert as `SUPERSEDED`, commit, return `superseded`.
+7. Otherwise, including a robot's first observation: `Robot.ApplyObservation` computes the new battery health; insert as `APPLIED`. Then the rule across the aggregates: `LOW` and no unresolved alert → `NewLowBatteryAlert` and insert it; not `LOW` and an unresolved alert → `Resolve` and update it. **Update `robots.battery_health` only if it changed**; commit; return `applied`.
 
-Typical cost per observation: one row lock, two index lookups, one insert. An update to `robots` happens only on a health transition.
+Typical cost per observation: one row lock, three index lookups (the third on the small unresolved-alert index), one insert. An update to `robots` or `alerts` happens only on a transition.
 
 ### DeactivateRobot / ActivateRobot
 
-- **Deactivate:** lock robot, set `INACTIVE` (idempotent), close any unresolved alert with reason `ROBOT_DEACTIVATED` in the same transaction. History and last readings stay.
+- **Deactivate:** lock robot, set `INACTIVE` (idempotent), lock the unresolved alert if any, read the clock, `Close` it with reason `ROBOT_DEACTIVATED`, all in one transaction. History and last readings stay.
 - **Activate:** lock robot; if `INACTIVE`, set `ACTIVE` and `activated_at = now`. Already `ACTIVE` is a no-op and keeps `activated_at`.
 
 ### AcknowledgeAlert
@@ -185,43 +185,14 @@ Lock the alert row, apply Alert.Acknowledge, commit.
 - ACKNOWLEDGED → nothing changes; still a success.
 - RESOLVED or CLOSED → rejected with ALERT_TERMINAL.
 
-The alert check locks the same row when it resolves or closes an alert, so an acknowledgement and a resolution never overwrite each other; one waits for the other.
+Telemetry and deactivation lock the same row before they resolve or close the alert, so an acknowledgement and a resolution never overwrite each other; one waits for the other.
 
-### ReconcileAlerts (every 5 seconds)
+### Alerts in the robot transaction
 
-Runs every 5 seconds from the alertcheck ticker, in one transaction. If another copy of the service is already running the check, this run is skipped (a Postgres advisory lock), so two copies never do the same work.
-
-```sql
--- open: active, LOW, reported since last activation, no unresolved alert
-INSERT INTO alerts (robot_id, kind, status, opened_at)
-SELECT r.id, 'LOW_BATTERY', 'OPEN', $now
-FROM robots r
-WHERE r.lifecycle = 'ACTIVE'
-  AND r.battery_health = 'LOW'
-  AND (SELECT o.received_at
-       FROM telemetry_observations o
-       WHERE o.robot_id = r.id AND o.outcome = 'APPLIED'
-       ORDER BY o.observed_at DESC
-       LIMIT 1) > r.activated_at
-ON CONFLICT (robot_id, kind) WHERE status IN ('OPEN','ACKNOWLEDGED') DO NOTHING
-RETURNING id;
-
--- resolve: robot back to NORMAL
-UPDATE alerts a SET status = 'RESOLVED', ended_at = $now
-FROM robots r
-WHERE a.robot_id = r.id AND a.status IN ('OPEN','ACKNOWLEDGED') AND r.battery_health = 'NORMAL';
-
--- close: safety net for INACTIVE robots (deactivation normally closes immediately)
-UPDATE alerts a SET status = 'CLOSED', closure_reason = 'ROBOT_DEACTIVATED', ended_at = $now
-FROM robots r
-WHERE a.robot_id = r.id AND a.status IN ('OPEN','ACKNOWLEDGED') AND r.lifecycle = 'INACTIVE';
-```
-
-- **Speed:** it reads the small `robots` table and does one quick index lookup for each low-battery robot. The size of the observations table makes no difference. (see README).
-- **Timestamps:** `opened_at` and `ended_at` record when the check ran, not when the observation arrived, so they can be up to 5 seconds later than the reading that caused them.
-- **Deactivation at the same moment:** if an operator deactivates a robot while the check is running, the check may still open an alert for it. The close step fixes this on the next run, at most 5 seconds later.
-- **Shutdown:** the check stops before the database connection is closed.
-- **Logging:** each run logs how many alerts it opened, resolved and closed.
+- **Lock order:** robot row, then alert row, in every transaction that takes both. Acknowledge takes only the alert row. With one order and no other locks, no deadlock is possible.
+- **Uniqueness:** only telemetry opens alerts, and it holds the robot lock, so two openings for one robot cannot overlap. The partial unique index guards this anyway.
+- **Timestamps:** each use case reads the injected clock once, after it holds every lock it needs, so times follow lock order: an acknowledgement that held the alert is never later than the resolution that waited for it. `opened_at` and a resolution's `ended_at` equal the `received_at` of the observation that caused them; a closure's `ended_at` is when the deactivation was recorded. If the clock ever ran backwards across these, the Alert rules reject the change and the transaction fails instead of storing history out of order.
+- **Atomicity:** the observation, the robot's health and the alert change commit together. Any failure rolls all three back, and a retry of the same observation is then new, not a duplicate.
 
 ## 6. Fleet queries (read side)
 
@@ -240,32 +211,38 @@ Kept deliberately simple. Reads that map to one aggregate reuse it; reports that
 
 ## 7. Runtime and operations
 
-- `bootstrap` loads config (`.env` / `.env.example`), builds the logger, opens the database, wires the module, starts the HTTP server and the alert check, and shuts both down on SIGINT/SIGTERM with a timeout.
+- `bootstrap` loads config (`.env` / `.env.example`), builds the logger, opens the database, wires the module, starts the HTTP server, and shuts it down on SIGINT/SIGTERM with a timeout.
 - HTTP server with explicit read/write/idle timeouts.
 - `docker-compose.yml`: PostgreSQL, a golang-migrate service, and the app.
 - Makefile: `help`, `up`, `down`, `test`, `test-integration`, `migrate-up`, `demo`.
-- Config: `DATABASE_URL`, `HTTP_SERVER_ADDRESS` (default `127.0.0.1:8080`), `ALERT_CHECK_INTERVAL` (default `5s`).
+- Config: `DATABASE_URL`, `HTTP_SERVER_ADDRESS` (default `127.0.0.1:8080`).
 
 ## 8. Test strategy
 
 **Domain (table-driven, unit)**
 
 - Battery hysteresis at `0`, `19.99`, `20.00`, `24.99`, `25.00`, `100`, starting from each health.
-- Alert acknowledgement from every status.
-- Robot lifecycle, `activated_at` on reactivation only, strictly advancing observed time, value-object validation.
+- Every Alert transition from every status; terminal alerts reject all of them; the acknowledgement survives resolve and close; times that run backwards are rejected.
+- Reconstitution rejects impossible Alert and Robot state (status/field mismatch, `LOW` with no observation, health that does not fit the battery, activation before registration) and accepts what lifecycle and hysteresis allow.
+- Robot lifecycle, `activated_at` on reactivation only, strictly advancing observed time, value-object validation, including a forged `OperatingMode`.
 
 **Application (unit, fakes)**
 
 - RecordTelemetry outcomes and every rejection, including duplicate-after-deactivation and the first observation.
+- Low-battery episodes: a short episode is resolved, not lost; a second episode gets a new unacknowledged alert; low readings in one episode keep one alert; superseded, duplicate and rejected readings change no alert; after reactivation the next applied reading decides.
 
 **PostgreSQL (integration, testcontainers)**
 
 - Registration: identical retry idempotent and does not reactivate; different site is a conflict; unknown site.
 - Applied observation becomes current state; `robots` is updated only when battery health changes; superseded is stored without affecting current state or health.
 - Concurrent reports for one robot cannot regress current state.
-- ReconcileAlerts: opens once for `LOW`; does not reopen while unresolved; resolves on `NORMAL`; closes for `INACTIVE`; after reactivation waits for a newer applied observation; overlapping runs never create two unresolved alerts.
-- Acknowledge racing a resolve: one wins, no lost update.
-- `EXPLAIN` of the open query and the fleet list shows an index scan on the `APPLIED` partial index, not a scan of observations.
+- Alert episodes end to end: short episode, second episode, superseded and resent low readings, reactivation.
+- CHECK constraints and the unique index reject impossible alert rows and activation before registration.
+- Forced orders (a test clock pauses one use case while it holds its locks; the test waits until PostgreSQL shows the other one waiting): acknowledge before resolve and resolve before acknowledge; low reading before deactivation and deactivation before low reading.
+- Concurrent low readings open one alert. A mixed run of telemetry, acknowledgements, deactivations and activations ends with no error other than the expected business ones, so no deadlock, and the rule across the aggregates holds.
+- A failing alert write rolls back the observation and the health change; the retry succeeds.
+- Acknowledge racing a resolve across 100 alerts: one wins, no lost update, times in order.
+- `EXPLAIN` of the fleet list shows an index scan on the `APPLIED` partial index, not a scan of observations; the unresolved-alert lookup uses `alerts_one_unresolved_idx`.
 
 **HTTP (`httptest`)**
 
@@ -273,7 +250,7 @@ Kept deliberately simple. Reads that map to one aggregate reuse it; reports that
 
 ## 9. Backlog
 
-Ten vertical slices. Each delivers one working capability end to end (domain, application, Postgres, HTTP, tests), is one commit, and leaves `make test` passing. Each slice adds only the domain code, columns and endpoints it needs.
+Ten vertical slices, then one correction (slice 11). Each delivers one working capability end to end (domain, application, Postgres, HTTP, tests), is one commit, and leaves `make test` passing. Each slice adds only the domain code, columns and endpoints it needs.
 
 **1. Service runs locally**
 As a developer, I can start the service and its database with one command.
@@ -310,6 +287,7 @@ As an operator, I can see which robots have low battery.
 As an operator, I see an alert when a robot's battery is low, and it resolves when the robot recovers.
 - `alerts` table with the partial unique index; Alert aggregate; `alertcheck` ticker running ReconcileAlerts every 5 s; `GET /api/alerts`.
 - **Done when:** one alert opens within 5 s of `LOW`; no second one while unresolved; it resolves within 5 s of `NORMAL`; overlapping runs never create two unresolved alerts.
+- Replaced by slice 11: the ticker saw only the latest health, so it could lose or merge episodes.
 
 **8. Acknowledge an alert** (ALT-03, ALT-04, ALT-08)
 As an operator, I can acknowledge an alert to show someone is on it.
@@ -325,3 +303,8 @@ As an operator, I can deactivate and reactivate a robot.
 As a fleet manager, I can see fleet counts and a robot's recent history, and a reviewer can watch every workflow run.
 - Read repository; `GET /api/fleet/summary`, `GET /api/robots/{id}/telemetry`; `scripts/demo.sh`; README filled in.
 - **Done when:** summary counts match VIS-03 (online, stale and low-battery among active robots only); history is bounded and marks `APPLIED`/`SUPERSEDED`; `make demo` runs workflows A–E end to end.
+
+**11. Alert lifecycle in the telemetry transaction** (ALT-01, ALT-05, ALT-07, REG-07)
+As an operator, I see every low-battery episode as its own alert, however short.
+- Alert owns open, acknowledge, resolve and close; RecordTelemetry and DeactivateRobot change the alert in their own transaction; stricter Robot, Alert and Observation validation; migration `000008` with CHECK constraints; the `alertcheck` worker and `ALERT_CHECK_INTERVAL` removed.
+- **Done when:** `60 → 18 → 30` leaves a resolved alert; a second episode gets a new `OPEN` alert; forced lock orders keep acknowledgements and time order; a failed alert write rolls back the reading.

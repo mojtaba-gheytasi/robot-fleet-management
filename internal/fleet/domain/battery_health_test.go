@@ -92,7 +92,8 @@ func robotWithHealth(t *testing.T, health domain.BatteryHealth) *domain.Robot {
 
 	var latest *domain.AppliedObservation
 	if health != domain.BatteryHealthUnknown {
-		latest = &domain.AppliedObservation{Observation: newObservation(t, "obs-current", now, 50), ReceivedAt: now}
+		// 22% is in the buffer, where both LOW and NORMAL are possible.
+		latest = &domain.AppliedObservation{Observation: newObservation(t, "obs-current", now, 22), ReceivedAt: now}
 	}
 
 	robot, err := domain.ReconstituteRobot("robot-101", "site-north", domain.LifecycleActive, now, now, health, latest)

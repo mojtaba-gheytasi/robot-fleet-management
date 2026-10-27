@@ -35,7 +35,7 @@ func TestActivateAnInactiveRobotRecordsTheTime(t *testing.T) {
 	robot.Deactivate()
 	activateAt := now.Add(time.Hour)
 
-	robot.Activate(activateAt)
+	require.NoError(t, robot.Activate(activateAt))
 
 	assert.Equal(t, domain.LifecycleActive, robot.Lifecycle())
 	assert.Equal(t, activateAt, robot.ActivatedAt())
@@ -45,8 +45,19 @@ func TestActivateAnInactiveRobotRecordsTheTime(t *testing.T) {
 func TestActivateAnActiveRobotKeepsItsActivationTime(t *testing.T) {
 	robot := robotWithHealth(t, domain.BatteryHealthNormal)
 
-	robot.Activate(now.Add(time.Hour))
+	require.NoError(t, robot.Activate(now.Add(time.Hour)))
 
+	assert.Equal(t, now, robot.ActivatedAt())
+}
+
+func TestActivateBeforeRegistrationIsRejected(t *testing.T) {
+	robot := robotWithHealth(t, domain.BatteryHealthNormal)
+	robot.Deactivate()
+
+	err := robot.Activate(now.Add(-time.Second))
+
+	require.ErrorIs(t, err, domain.ErrInvalidRobot)
+	assert.Equal(t, domain.LifecycleInactive, robot.Lifecycle())
 	assert.Equal(t, now, robot.ActivatedAt())
 }
 

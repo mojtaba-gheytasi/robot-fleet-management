@@ -19,14 +19,8 @@ type fakeRobots struct {
 	createCalls  int
 	listedSiteID *domain.SiteID
 	added        []recordedObservation
-	closedAlerts []closedAlerts
+	alerts       []*domain.Alert
 	mutex        sync.Mutex
-}
-
-type closedAlerts struct {
-	robotID domain.RobotID
-	reason  domain.ClosureReason
-	at      time.Time
 }
 
 type recordedObservation struct {
@@ -110,16 +104,41 @@ func (robots *fakeRobots) WithLockedRobot(
 	}
 
 	robots.added = append(robots.added, tx.pending...)
-	robots.closedAlerts = append(robots.closedAlerts, tx.closed...)
+	for _, saved := range tx.savedAlerts {
+		robots.storeAlert(saved)
+	}
 
 	return nil
 }
 
+// storeAlert replaces the alert with the same ID, or adds it.
+func (robots *fakeRobots) storeAlert(alert *domain.Alert) {
+	for i, stored := range robots.alerts {
+		if stored.ID() == alert.ID() {
+			robots.alerts[i] = alert
+			return
+		}
+	}
+
+	robots.alerts = append(robots.alerts, alert)
+}
+
+func (robots *fakeRobots) alertsOf(id domain.RobotID) []*domain.Alert {
+	alerts := make([]*domain.Alert, 0)
+	for _, alert := range robots.alerts {
+		if alert.RobotID() == id {
+			alerts = append(alerts, alert)
+		}
+	}
+
+	return alerts
+}
+
 type fakeRobotTx struct {
-	robotID domain.RobotID
-	robots  *fakeRobots
-	pending []recordedObservation
-	closed  []closedAlerts
+	robotID     domain.RobotID
+	robots      *fakeRobots
+	pending     []recordedObservation
+	savedAlerts []*domain.Alert
 }
 
 func (log *fakeRobotTx) FindObservation(_ context.Context, id domain.ObservationID) (domain.Observation, bool, error) {
@@ -148,8 +167,26 @@ func (log *fakeRobotTx) AddObservation(
 	return nil
 }
 
-func (log *fakeRobotTx) CloseUnresolvedAlerts(_ context.Context, reason domain.ClosureReason, now time.Time) (int, error) {
-	log.closed = append(log.closed, closedAlerts{robotID: log.robotID, reason: reason, at: now})
+// FindUnresolvedAlert returns a copy, so a rolled-back change never reaches the stored alert.
+func (log *fakeRobotTx) FindUnresolvedAlert(context.Context) (*domain.Alert, error) {
+	for _, alert := range log.robots.alertsOf(log.robotID) {
+		if alert.Status() == domain.AlertStatusOpen || alert.Status() == domain.AlertStatusAcknowledged {
+			copied := *alert
+			return &copied, nil
+		}
+	}
 
-	return 1, nil
+	return nil, nil
+}
+
+func (log *fakeRobotTx) AddAlert(_ context.Context, alert *domain.Alert) error {
+	log.savedAlerts = append(log.savedAlerts, alert)
+
+	return nil
+}
+
+func (log *fakeRobotTx) SaveAlert(_ context.Context, alert *domain.Alert) error {
+	log.savedAlerts = append(log.savedAlerts, alert)
+
+	return nil
 }

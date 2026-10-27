@@ -28,7 +28,6 @@ flowchart LR
     Manager[Fleet manager] -->|register, read fleet, robots, alerts<br/>acknowledge, deactivate, activate| API
     subgraph service["fleet service"]
         API --> Fleet[fleet module]
-        Check["alert check<br/>(background worker, every 5 s)"] --> Fleet
     end
     Fleet --- DB[(PostgreSQL)]
 ```
@@ -46,7 +45,7 @@ stopping. Working this out decided most of the design:
 | What happens to the robot | What the server sees | Result |
 |---|---|---|
 | Normal work | Snapshot every second | Current state updates; `ONLINE` |
-| Battery drains below 20% | Battery value dropping | `LOW`; an alert opens within 5 s |
+| Battery drains below 20% | Battery value dropping | `LOW`; an alert opens with that snapshot |
 | Put on the charger | `CHARGING`, battery rising | Alert resolves at 25% or more |
 | Something breaks | Mode `ERROR` | Shown in its state; no alert |
 | Turned off or lost network | Nothing | After 10 s without data: `STALE` |
@@ -60,15 +59,18 @@ stopping. Working this out decided most of the design:
 
 An aggregate is what must stay correct together, so it is changed under one lock. Robot's
 rules (accept telemetry only when active, apply only newer snapshots, the 20%/25% health
-rule) need only robot data. Alert's rules (acknowledge only when `OPEN`; `RESOLVED` and
-`CLOSED` are final) need only alert data. No rule needs both to change at the same instant.
+rule) need only robot data. Alert's rules (its status machine: open, acknowledge, resolve,
+close; final states stay final; the fields and times always fit the status) need only alert
+data. Both are methods on the aggregates; SQL only stores the result.
 
-Putting alerts inside Robot would cost three things. Acknowledging would lock the robot, so
-an operator's click and the robot's telemetry (every second) would wait for each other.
-Every snapshot would load alerts it never changes. And an alert has its own ID and history:
-operators list and acknowledge alerts directly, and a robot has many over its life. So the
-alert holds only the robot's ID. The 5 s check keeps alerts in line with robot state, and a
-unique index allows at most one unresolved alert per robot.
+Putting alerts inside Robot would make an acknowledgement lock the robot, so an operator's
+click and the robot's telemetry (every second) would wait for each other. An alert also has
+its own ID and history: operators list and acknowledge alerts directly, and a robot has many
+over its life. So the alert holds only the robot's ID.
+
+One rule does need both: an active `LOW` robot has exactly one unresolved alert. The use
+cases that change it (telemetry and deactivation) change the robot and its one unresolved
+alert in the same transaction, robot lock first. See decision 3.
 
 ### 2. Late, repeated and concurrent snapshots never corrupt current state
 
@@ -79,14 +81,12 @@ Each snapshot is recorded under a per-robot row lock and ends as one of three ou
 asserts that state never goes backwards. Reading the latest snapshot in the same statement
 as the lock makes that test fail every time, which is why the read is a separate statement.
 
-### 3. Alerts are a projection of robot state
+### 3. Every low-battery episode gets its own alert
 
-Ingestion only stores facts and answers quickly. A background check every 5 s compares
-robot state with alerts in one transaction, with one SQL statement per rule: open for an
-active `LOW` robot, resolve when `NORMAL`, close when `INACTIVE`. A partial unique index
-guarantees at most one unresolved alert per robot, even if two checks overlap, and an
-advisory lock keeps two copies of the service from doing the same work. The cost is that
-an alert can appear up to 5 s after the reading.
+After each applied snapshot, in the same transaction: if the robot is `LOW` and has no
+unresolved alert, one opens; if it is no longer `LOW`, its alert resolves. Deactivation
+closes it in its own transaction. Robot decides the health, Alert decides how it changes,
+and the use case commits both or neither.
 
 ### 4. Battery health is stored; connectivity is computed
 
@@ -106,10 +106,13 @@ for new data gets `OBSERVATION_CONFLICT` instead of having real data dropped as 
 
 ### 6. Acknowledging and resolving at the same moment loses neither
 
-Acknowledging locks the alert row, so it waits for, or is waited on by, the alert check.
-If the resolution wins, the acknowledgement returns `ALERT_TERMINAL`; if the
-acknowledgement wins, the resolution keeps it. A race test runs both together across 100
-alerts; without the lock it overwrites resolutions every time.
+Acknowledging locks the alert row; a recovery snapshot locks the same row before it
+resolves. If the resolution wins, the acknowledgement returns `ALERT_TERMINAL`; if the
+acknowledgement wins, the resolution keeps it. Locks are always taken robot first, then
+alert, so they cannot deadlock. Each use case reads the clock only after it holds its
+locks, so an alert's times never run backwards; the domain and CHECK constraints reject it
+if they would. Tests force each order with a clock that pauses one use case while it holds
+its locks, and a race across 100 alerts checks the same rules under load.
 
 ### 7. Deactivation closes the alert in the same transaction
 
@@ -120,8 +123,8 @@ reactivation, an alert opens only after a fresh low snapshot.
 
 ### 8. Finding a robot's current snapshot stays fast at any history size
 
-One robot sends about 86,000 snapshots a day. The fleet list, robot details, summary and
-alert check all ask "what is this robot's newest applied snapshot?" in exactly this shape:
+One robot sends about 86,000 snapshots a day. Ingestion, the fleet list, robot details and
+the summary all ask "what is this robot's newest applied snapshot?" in exactly this shape:
 
 ```sql
 WHERE robot_id = $1 AND outcome = 'APPLIED' ORDER BY observed_at DESC LIMIT 1
@@ -138,7 +141,7 @@ Requirements: Docker with Compose and `make`; Go 1.25 for the tests.
 
 ```bash
 make up                # PostgreSQL, migrations and the service on 127.0.0.1:8080
-make demo              # runs PRD workflows A–E and checks every answer (~40 s)
+make demo              # runs PRD workflows A–E and checks every answer (~15 s)
 make test              # unit tests, with the race detector
 make test-integration  # plus real PostgreSQL through testcontainers
 make down
@@ -174,9 +177,8 @@ Error codes and payloads are in the [technical design](./ROBOT_FLEET_IMPLEMENTAT
 - **Ordering trusts the robot's clock.** Simple and needs no extra protocol; a clock set
   backwards freezes that robot's state until it catches up.
 - **Smaller limits:** the robot list has no paging; alert and history lists are capped at
-  200; alert times are when the check ran (up to 5 s after the reading); robot IDs are
-  1–64 letters, digits, `-`, `_` or `.`, because they appear in URLs; unknown routes get
-  Go's plain-text 404.
+  200; robot IDs are 1–64 letters, digits, `-`, `_` or `.`, because they appear in URLs;
+  unknown routes get Go's plain-text 404.
 
 ### What I would do differently with more time or in production
 
@@ -186,8 +188,8 @@ Error codes and payloads are in the [technical design](./ROBOT_FLEET_IMPLEMENTAT
   the robot's clock.
 - **Event messages next to snapshots** (docked, e-stop, shutting down), so "turned off" and
   "lost network" stop looking the same.
-- **Notifications:** the alert check writes an outbox row with each new alert; a worker
-  sends it and retries, so nothing is lost or sent twice.
+- **Notifications:** the transaction that opens an alert also writes an outbox row; a
+  worker sends it and retries, so nothing is lost or sent twice.
 - **More alert types:** connectivity lost, `ERROR` mode, and escalation of unacknowledged
   alerts. If alerting grows like this, it becomes its own module.
 - **History at scale:** time-partitioned tables, retention and downsampling.

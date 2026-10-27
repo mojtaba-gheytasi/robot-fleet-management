@@ -74,7 +74,10 @@ func ReconstituteRobot(
 		registeredAt:  registeredAt,
 		activatedAt:   activatedAt,
 		batteryHealth: batteryHealth,
-		latest:        latest,
+	}
+	if latest != nil {
+		copied := *latest
+		robot.latest = &copied
 	}
 
 	if err := robot.validate(); err != nil {
@@ -104,13 +107,19 @@ func (robot *Robot) ActivatedAt() time.Time {
 	return robot.activatedAt
 }
 
-func (robot *Robot) Activate(now time.Time) {
+func (robot *Robot) Activate(now time.Time) error {
 	if robot.lifecycle == LifecycleActive {
-		return
+		return nil
+	}
+
+	if now.Before(robot.registeredAt) {
+		return fmt.Errorf("%w: activation time is before registration", ErrInvalidRobot)
 	}
 
 	robot.lifecycle = LifecycleActive
 	robot.activatedAt = now
+
+	return nil
 }
 
 func (robot *Robot) Deactivate() {
@@ -126,6 +135,10 @@ func (robot *Robot) LatestObservation() (AppliedObservation, bool) {
 }
 
 func (robot *Robot) ApplyObservation(observation Observation, receivedAt time.Time) (ObservationOutcome, error) {
+	if err := observation.validate(); err != nil {
+		return "", err
+	}
+
 	if robot.lifecycle == LifecycleInactive {
 		return "", ErrRobotInactive
 	}
@@ -189,6 +202,35 @@ func (robot *Robot) validate() error {
 
 	if robot.registeredAt.IsZero() || robot.activatedAt.IsZero() {
 		return fmt.Errorf("%w: registration and activation times are required", ErrInvalidRobot)
+	}
+
+	if robot.activatedAt.Before(robot.registeredAt) {
+		return fmt.Errorf("%w: activation time is before registration", ErrInvalidRobot)
+	}
+
+	if robot.latest == nil {
+		if robot.batteryHealth != BatteryHealthUnknown {
+			return fmt.Errorf("%w: battery health is %s with no applied observation", ErrInvalidRobot, robot.batteryHealth)
+		}
+
+		return nil
+	}
+
+	if err := robot.latest.Observation.validate(); err != nil {
+		return fmt.Errorf("%w: latest observation: %w", ErrInvalidRobot, err)
+	}
+
+	if robot.latest.ReceivedAt.IsZero() {
+		return fmt.Errorf("%w: latest observation has no receipt time", ErrInvalidRobot)
+	}
+
+	if robot.batteryHealth.allows(robot.latest.Observation.Battery()) == false {
+		return fmt.Errorf(
+			"%w: battery health %s does not fit the latest battery %s%%",
+			ErrInvalidRobot,
+			robot.batteryHealth,
+			robot.latest.Observation.Battery(),
+		)
 	}
 
 	return nil

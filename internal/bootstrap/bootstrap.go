@@ -40,25 +40,10 @@ func Run(ctx context.Context) error {
 	logger.Info("connected to PostgreSQL")
 
 	fleet := wiring.New(wiring.Dependencies{
-		DB:                 db,
-		Logger:             logger,
-		Clock:              func() time.Time { return time.Now().UTC() },
-		AlertCheckInterval: cfg.AlertCheckInterval,
+		DB:     db,
+		Logger: logger,
+		Clock:  func() time.Time { return time.Now().UTC() },
 	})
-
-	alertCheckCtx, cancelAlertCheck := context.WithCancel(ctx)
-	alertCheckDone := make(chan struct{})
-	go func() {
-		fleet.AlertCheck.Run(alertCheckCtx)
-		close(alertCheckDone)
-	}()
-	stopAlertCheck := func() {
-		cancelAlertCheck()
-		<-alertCheckDone
-	}
-	defer stopAlertCheck()
-
-	logger.Info("alert check started", "interval", cfg.AlertCheckInterval.String())
 
 	mux := http.NewServeMux()
 	httpserver.RegisterHealth(mux, db)
@@ -84,9 +69,6 @@ func Run(ctx context.Context) error {
 	}
 
 	logger.Info("shutting down", "timeout", shutdownTimeout.String())
-
-	stopAlertCheck()
-	logger.Info("alert check stopped")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
