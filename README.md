@@ -24,11 +24,11 @@ rules; the server is where they can be wrong.
 
 ```mermaid
 flowchart LR
-    Robots["Robots (demo.sh)"] -->|POST telemetry| API[HTTP API]
-    Manager[Fleet manager client] -->|read fleet, robots, alerts<br/>acknowledge, deactivate| API
+    Robots -->|POST telemetry| API[HTTP API]
+    Manager[Fleet manager] -->|register, read fleet, robots, alerts<br/>acknowledge, deactivate, activate| API
     subgraph service["fleet service"]
         API --> Fleet[fleet module]
-        Check[alert check, every 5 s] --> Fleet
+        Check["alert check<br/>(background worker, every 5 s)"] --> Fleet
     end
     Fleet --- DB[(PostgreSQL)]
 ```
