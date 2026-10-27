@@ -114,7 +114,7 @@ An observation represents a robot's report at a specified device time; receipt t
 - **VIS-01** — Clients can list registered robots and query an individual robot's current state: site, lifecycle, latest measured battery, position, operating mode, battery health, connectivity and observation/receipt times.
 - **VIS-02** — Clients can filter robots by site and retrieve a fleet-level summary for all sites or a selected site.
 - **VIS-03** — Summary data reports counts of registered, active and inactive robots, unresolved alerts, and, **among active robots only**, online, stale and low-battery robots. Inactive robots keep their last-known values but do not inflate operational attention counts. An active robot without an applied observation has `UNKNOWN` connectivity, so online and stale counts need not sum to the active count.
-- **VIS-04** — Clients can list unresolved alerts and review terminal alert history.
+- **VIS-04** — Clients can list every unresolved alert and review recent terminal alert history.
 - **VIS-05** — Clients can retrieve a bounded window of a robot's recorded observations, distinguishing applied from superseded observations.
 - **VIS-06** — Before observations are available, unknown fields are represented explicitly rather than replaced by fabricated values.
 

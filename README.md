@@ -158,7 +158,7 @@ If port 8080 is taken, copy `.env.example` to `.env`, set `HTTP_PORT`, and run
 | `GET` | `/api/robots/{id}/telemetry` | Recent history, each marked `APPLIED` or `SUPERSEDED` |
 | `POST` | `/api/robots/{id}/deactivate`, `/activate` | Take a robot out of service and back |
 | `GET` | `/api/fleet/summary` | Counts for the whole fleet or one site (`?site_id=`) |
-| `GET` | `/api/alerts` | Unresolved alerts, or `?state=terminal` for history |
+| `GET` | `/api/alerts` | Every unresolved alert, or `?state=terminal` for recent history |
 | `POST` | `/api/alerts/{id}/acknowledge` | Acknowledge an alert |
 | `GET` | `/healthz`, `/readyz` | Liveness; readiness checks the database |
 
@@ -176,9 +176,10 @@ Error codes and payloads are in the [technical design](./ROBOT_FLEET_IMPLEMENTAT
 - **Sites** are seeded reference data; there is no site API.
 - **Ordering trusts the robot's clock.** Simple and needs no extra protocol; a clock set
   backwards freezes that robot's state until it catches up.
-- **Smaller limits:** the robot list has no paging; alert and history lists are capped at
-  200; robot IDs are 1–64 letters, digits, `-`, `_` or `.`, because they appear in URLs;
-  unknown routes get Go's plain-text 404.
+- **Smaller limits:** the robot list and the unresolved-alert list have no paging (a robot
+  has at most one unresolved alert); terminal alerts and history are capped at 200; robot
+  IDs are 1–64 letters, digits, `-`, `_` or `.`, because they appear in URLs; unknown routes
+  get Go's plain-text 404.
 
 ### What I would do differently with more time or in production
 

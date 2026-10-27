@@ -52,6 +52,39 @@ func TestAlertRepositoryListsTerminalAlertsMostRecentlyEndedFirst(t *testing.T) 
 	assert.True(t, endedAt.Equal(checkedAt.Add(time.Minute)))
 }
 
+func TestAlertRepositoryListsEveryUnresolvedAlertWithoutALimit(t *testing.T) {
+	db := startPostgres(t)
+	// 201 robots, each with one unresolved alert; every third is acknowledged, and ten
+	// share each opening time, so the order must break ties by id.
+	_, err := db.Exec(`
+		INSERT INTO robots (id, site_id, lifecycle, created_at, activated_at)
+		SELECT 'robot-' || n, 'site-north', 'ACTIVE', $1, $1 FROM generate_series(1, 201) n`, registeredAt)
+	require.NoError(t, err)
+	_, err = db.Exec(`
+		INSERT INTO alerts (robot_id, kind, status, opened_at, acknowledged_at)
+		SELECT 'robot-' || n, 'LOW_BATTERY',
+			CASE WHEN n % 3 = 0 THEN 'ACKNOWLEDGED' ELSE 'OPEN' END,
+			$1::timestamptz + (n / 10) * interval '1 minute',
+			CASE WHEN n % 3 = 0 THEN $1::timestamptz + interval '1 day' END
+		FROM generate_series(1, 201) n`, checkedAt)
+	require.NoError(t, err)
+
+	alerts, err := postgres.NewAlertRepository(db).List(context.Background(), false, 0)
+	require.NoError(t, err)
+
+	require.Len(t, alerts, 201)
+	listed := make(map[domain.RobotID]bool)
+	for i, alert := range alerts {
+		listed[alert.RobotID()] = true
+		if i > 0 {
+			assert.False(t, alert.OpenedAt().After(alerts[i-1].OpenedAt()), "not newest first")
+		}
+	}
+	for n := 1; n <= 201; n++ {
+		assert.True(t, listed[domain.RobotID(fmt.Sprintf("robot-%d", n))], "the alert of robot-%d is missing", n)
+	}
+}
+
 func TestAlertRepositoryAppliesTheLimit(t *testing.T) {
 	db := startPostgres(t)
 	seedAlerts(t, db)

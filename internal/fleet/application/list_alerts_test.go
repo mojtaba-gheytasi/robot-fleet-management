@@ -11,22 +11,27 @@ import (
 	"github.com/mojtaba-gheytasi/robot-fleet-management/internal/fleet/domain"
 )
 
-func TestListAlertsBoundsTheLimit(t *testing.T) {
+func TestListAlertsLimits(t *testing.T) {
 	tests := map[string]struct {
+		terminal  bool
 		requested int
 		want      int
 	}{
-		"not given":     {0, 50},
-		"within range":  {10, 10},
-		"at the cap":    {200, 200},
-		"above the cap": {5000, 200},
+		"unresolved, not given":   {false, 0, 0},
+		"unresolved, given":       {false, 10, 10},
+		"unresolved, above 200":   {false, 5000, 5000},
+		"terminal, not given":     {true, 0, 50},
+		"terminal, within range":  {true, 10, 10},
+		"terminal, at the cap":    {true, 200, 200},
+		"terminal, above the cap": {true, 5000, 200},
 	}
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			alerts := &fakeAlerts{}
 
-			_, err := application.NewListAlerts(alerts).Execute(context.Background(), application.ListAlertsQuery{Limit: tt.requested})
+			_, err := application.NewListAlerts(alerts).
+				Execute(context.Background(), application.ListAlertsQuery{Terminal: tt.terminal, Limit: tt.requested})
 			require.NoError(t, err)
 
 			assert.Equal(t, tt.want, alerts.limit)

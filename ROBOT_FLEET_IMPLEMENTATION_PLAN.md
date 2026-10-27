@@ -118,7 +118,7 @@ Standard-library `http.ServeMux` with method patterns and `Request.PathValue()`;
 | `GET` | `/api/robots/{id}` | Current state. |
 | `GET` | `/api/robots/{id}/telemetry` | Bounded recent history with outcome. |
 | `GET` | `/api/fleet/summary` | Counts; optional `site_id`. |
-| `GET` | `/api/alerts` | Unresolved or terminal alerts. |
+| `GET` | `/api/alerts` | Every unresolved alert, or terminal alerts (`?state=terminal`). |
 | `POST` | `/api/alerts/{id}/acknowledge` | Acknowledge; repeat is idempotent. |
 | `GET` | `/healthz`, `/readyz` | Liveness; readiness checks the database. |
 
@@ -207,6 +207,7 @@ Kept deliberately simple. Reads that map to one aggregate reuse it; reports that
 - **Summary** is one SQL query with counts, not robots loaded into memory. `registered`, `active`, `inactive` and unresolved-alert counts cover all robots (or one site); `online`, `stale` and `low_battery` count **active robots only**. `online + stale` can be less than `active` because of `UNKNOWN`.
 - **Connectivity** uses the domain rule `ConnectivityAt(now)`: no applied observation → `UNKNOWN`; received ≤ 10 s ago → `ONLINE`; otherwise `STALE`. The summary query applies the same 10-second rule in SQL.
 - **History** returns 50 rows by default, at most 200, each marked `APPLIED` or `SUPERSEDED`.
+- **Alerts:** the unresolved list has no default cap. A robot has at most one unresolved alert, so the list is never longer than the robot list; an explicit `limit` still applies. Terminal alerts are a recent window: 50 by default, at most 200.
 - **Unknown values** are returned as `null`, never filled with made-up defaults.
 
 ## 7. Runtime and operations
@@ -241,6 +242,7 @@ Kept deliberately simple. Reads that map to one aggregate reuse it; reports that
 - Forced orders (a test clock pauses one use case while it holds its locks; the test waits until PostgreSQL shows the other one waiting): acknowledge before resolve and resolve before acknowledge; low reading before deactivation and deactivation before low reading.
 - Concurrent low readings open one alert. A mixed run of telemetry, acknowledgements, deactivations and activations ends with no error other than the expected business ones, so no deadlock, and the rule across the aggregates holds.
 - A failing alert write rolls back the observation and the health change; the retry succeeds.
+- 201 unresolved alerts, some acknowledged and some with equal opening times, are all listed.
 - Acknowledge racing a resolve across 100 alerts: one wins, no lost update, times in order.
 - `EXPLAIN` of the fleet list shows an index scan on the `APPLIED` partial index, not a scan of observations; the unresolved-alert lookup uses `alerts_one_unresolved_idx`.
 

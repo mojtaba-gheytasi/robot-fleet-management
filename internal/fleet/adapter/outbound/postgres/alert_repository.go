@@ -21,12 +21,12 @@ const (
 	listUnresolvedAlertsQuery = selectAlertsQuery + `
 		WHERE status IN ('OPEN', 'ACKNOWLEDGED')
 		ORDER BY opened_at DESC, id
-		LIMIT $1`
+		LIMIT NULLIF($1, 0)`
 
 	listTerminalAlertsQuery = selectAlertsQuery + `
 		WHERE status IN ('RESOLVED', 'CLOSED')
 		ORDER BY ended_at DESC, id
-		LIMIT $1`
+		LIMIT NULLIF($1, 0)`
 
 	lockAlertQuery = selectAlertsQuery + `
 		WHERE id = $1

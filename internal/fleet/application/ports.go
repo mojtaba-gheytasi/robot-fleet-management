@@ -36,6 +36,7 @@ type RobotTx interface {
 type Clock func() time.Time
 
 type AlertRepository interface {
+	// List with a limit of 0 returns every matching alert.
 	List(ctx context.Context, terminal bool, limit int) ([]*domain.Alert, error)
 
 	// WithLockedAlert runs fn while the alert row is locked and saves the alert's changes with it.
