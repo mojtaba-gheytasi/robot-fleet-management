@@ -106,7 +106,7 @@ Primary key `(robot_id, observation_id)`; index `(robot_id, observed_at DESC)` f
 
 ## 4. HTTP API contract
 
-Standard-library `http.ServeMux` with method patterns and `Request.PathValue()`; no third-party router. Strict JSON decoding (unknown fields rejected); bounded body size; RFC 3339 UTC timestamps.
+Standard-library `http.ServeMux` with method patterns and `Request.PathValue()`; no third-party router. Strict JSON decoding (unknown fields rejected); bounded body size; RFC 3339 UTC timestamps. Each request has a 5 s deadline that reaches the database: a request still waiting then stops, rolls back, frees its connection and answers `REQUEST_TIMEOUT`.
 
 | Method | Route | Behavior |
 |---|---|---|
@@ -154,6 +154,7 @@ Every error body carries a stable `code`. Codes are application-level errors; on
 | `ALERT_TERMINAL` | 409 | Acknowledging a `RESOLVED` or `CLOSED` alert |
 | `INVALID_OBSERVATION` | 422 | Battery, position, mode or precision invalid |
 | `CLOCK_SKEW_EXCEEDED` | 422 | Observation time more than 5 s ahead of server time |
+| `REQUEST_TIMEOUT` | 503 | The request ran past its 5 s deadline and changed nothing; safe to retry, as every write is idempotent |
 | `INTERNAL` | 500 | Unexpected failure; no internals exposed |
 
 Success: `201` for a new registration, `200` otherwise. Transient database errors map to `500`, never to a business conflict.
@@ -213,7 +214,7 @@ Kept deliberately simple. Reads that map to one aggregate reuse it; reports that
 ## 7. Runtime and operations
 
 - `bootstrap` loads config (`.env` / `.env.example`), builds the logger, opens the database, wires the module, starts the HTTP server, and shuts it down on SIGINT/SIGTERM with a timeout.
-- HTTP server with explicit read/write/idle timeouts.
+- HTTP server with explicit read/write/idle timeouts, and a 5 s request deadline, shorter than the 10 s write timeout so the timeout answer can still be written.
 - `docker-compose.yml`: PostgreSQL, a golang-migrate service, and the app.
 - Makefile: `help`, `up`, `down`, `test`, `test-integration`, `migrate-up`, `demo`.
 - Config: `DATABASE_URL`, `HTTP_SERVER_ADDRESS` (default `127.0.0.1:8080`).
@@ -242,6 +243,7 @@ Kept deliberately simple. Reads that map to one aggregate reuse it; reports that
 - Forced orders (a test clock pauses one use case while it holds its locks; the test waits until PostgreSQL shows the other one waiting): acknowledge before resolve and resolve before acknowledge; low reading before deactivation and deactivation before low reading.
 - Concurrent low readings open one alert. A mixed run of telemetry, acknowledgements, deactivations and activations ends with no error other than the expected business ones, so no deadlock, and the rule across the aggregates holds.
 - A failing alert write rolls back the observation and the health change; the retry succeeds.
+- A reading that waits on a locked robot past its deadline stops, changes nothing and frees its connection; the retry succeeds.
 - 201 unresolved alerts, some acknowledged and some with equal opening times, are all listed.
 - Acknowledge racing a resolve across 100 alerts: one wins, no lost update, times in order.
 - `EXPLAIN` of the fleet list shows an index scan on the `APPLIED` partial index, not a scan of observations; the unresolved-alert lookup uses `alerts_one_unresolved_idx`.

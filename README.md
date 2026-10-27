@@ -177,9 +177,9 @@ Error codes and payloads are in the [technical design](./ROBOT_FLEET_IMPLEMENTAT
 - **Ordering trusts the robot's clock.** Simple and needs no extra protocol; a clock set
   backwards freezes that robot's state until it catches up.
 - **Smaller limits:** the robot list and the unresolved-alert list have no paging (a robot
-  has at most one unresolved alert); terminal alerts and history are capped at 200; robot
-  IDs are 1–64 letters, digits, `-`, `_` or `.`, because they appear in URLs; unknown routes
-  get Go's plain-text 404.
+  has at most one unresolved alert); terminal alerts and history are capped at 200; a
+  request stops after 5 s with `REQUEST_TIMEOUT`; robot IDs are 1–64 letters, digits, `-`,
+  `_` or `.`, because they appear in URLs; unknown routes get Go's plain-text 404.
 
 ### What I would do differently with more time or in production
 

@@ -3,8 +3,12 @@ package httpapi_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -167,4 +171,28 @@ func (useCase *fakeRecordTelemetry) Execute(
 	useCase.command = command
 
 	return useCase.result, useCase.err
+}
+
+func TestARequestPastItsDeadlineGetsATimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	request := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/robots/robot-101/telemetry", strings.NewReader(validTelemetryBody))
+	response := httptest.NewRecorder()
+
+	httpapi.NewHandler(httpapi.Config{
+		Logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+		RecordTelemetry: waitingRecordTelemetry{},
+	}).ServeHTTP(response, request)
+
+	assert.Equal(t, http.StatusServiceUnavailable, response.Code)
+	assert.Equal(t, "REQUEST_TIMEOUT", errorCode(t, response))
+}
+
+// waitingRecordTelemetry waits like a use case blocked on a lock, until its context ends.
+type waitingRecordTelemetry struct{}
+
+func (waitingRecordTelemetry) Execute(ctx context.Context, _ application.RecordTelemetryCommand) (application.RecordTelemetryResult, error) {
+	<-ctx.Done()
+
+	return application.RecordTelemetryResult{}, fmt.Errorf("lock robot: %w", ctx.Err())
 }

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -20,6 +21,7 @@ const (
 	codeAlertNotFound             = "ALERT_NOT_FOUND"
 	codeAlertTerminal             = "ALERT_TERMINAL"
 	codeRobotInactive             = "ROBOT_INACTIVE"
+	codeRequestTimeout            = "REQUEST_TIMEOUT"
 	codeInternal                  = "INTERNAL"
 )
 
@@ -68,6 +70,10 @@ func respondUseCaseError(w http.ResponseWriter, r *http.Request, logger *slog.Lo
 			codeRobotRegistrationConflict,
 			"a robot with this id is already registered with different data",
 		)
+	// The request's own deadline, not the error chain, which depends on the database driver.
+	case errors.Is(r.Context().Err(), context.DeadlineExceeded):
+		logger.Warn("request ran out of time", "method", r.Method, "path", r.URL.Path, "error", err)
+		respondError(w, http.StatusServiceUnavailable, codeRequestTimeout, "the request took too long; it is safe to retry")
 	default:
 		logger.Error("request failed", "method", r.Method, "path", r.URL.Path, "error", err)
 		respondError(w, http.StatusInternalServerError, codeInternal, "an unexpected error occurred")

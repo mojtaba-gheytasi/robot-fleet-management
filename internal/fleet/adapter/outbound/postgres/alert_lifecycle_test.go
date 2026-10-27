@@ -450,6 +450,35 @@ func TestAFailedAlertWriteRollsBackTheWholeReading(t *testing.T) {
 	}
 }
 
+func TestAReadingThatRunsOutOfTimeWaitingForALockChangesNothing(t *testing.T) {
+	db := startPostgres(t)
+	fleet := newFleet(t, db, "robot-101")
+	holder, err := db.Begin()
+	require.NoError(t, err)
+	_, err = holder.Exec(`SELECT id FROM robots WHERE id = 'robot-101' FOR UPDATE`)
+	require.NoError(t, err)
+	command := reading("robot-101", "obs-low", 1, 18)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, err = application.NewRecordTelemetry(fleet.robots, fleet.clock).Execute(ctx, command)
+
+	require.Error(t, err)
+	require.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
+	require.Eventually(t, func() bool { return db.Stats().InUse == 1 }, 5*time.Second, 10*time.Millisecond,
+		"only the lock holder's connection is still in use")
+
+	require.NoError(t, holder.Rollback())
+	assert.Equal(t, 0, countObservations(t, db))
+	assert.Empty(t, storedAlerts(t, db))
+
+	result, err := application.NewRecordTelemetry(fleet.robots, fleet.clock).Execute(context.Background(), command)
+	require.NoError(t, err)
+	assert.Equal(t, application.TelemetryOutcomeApplied, result.Outcome, "the stopped attempt left nothing behind")
+	assert.Equal(t, 1, countObservations(t, db))
+	assert.Len(t, storedAlerts(t, db), 1)
+}
+
 type fleetFixture struct {
 	robots *postgres.RobotRepository
 	clock  application.Clock
