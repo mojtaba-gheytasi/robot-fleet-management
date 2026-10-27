@@ -159,3 +159,25 @@ func (useCase *fakeRegisterRobot) Execute(
 
 	return useCase.result, useCase.err
 }
+
+func TestRegisterRobotRejectsIDsTheRouterWouldRewrite(t *testing.T) {
+	// The real use case rejects the ID before it reaches the repository, so none is needed.
+	registerRobot := application.NewRegisterRobot(nil, time.Now)
+
+	for _, id := range []string{".", ".."} {
+		response := serve(httpapi.Config{RegisterRobot: registerRobot}, http.MethodPost, "/api/robots",
+			`{"id": "`+id+`", "site_id": "site-north"}`)
+
+		assert.Equal(t, http.StatusBadRequest, response.Code, id)
+		assert.Equal(t, "INVALID_REQUEST", errorCode(t, response), id)
+	}
+}
+
+func TestADottedRobotIDReachesItsTelemetryRoute(t *testing.T) {
+	useCase := &fakeRecordTelemetry{result: application.RecordTelemetryResult{Outcome: application.TelemetryOutcomeApplied}}
+
+	response := serve(httpapi.Config{RecordTelemetry: useCase}, http.MethodPost, "/api/robots/robot.1/telemetry", validTelemetryBody)
+
+	require.Equal(t, http.StatusOK, response.Code)
+	assert.Equal(t, "robot.1", useCase.command.RobotID)
+}

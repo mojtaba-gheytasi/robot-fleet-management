@@ -32,9 +32,11 @@ func TestNewRobotHasUnknownHealthAndConnectivity(t *testing.T) {
 }
 
 func TestNewRobotAcceptsEveryAllowedIDCharacter(t *testing.T) {
-	_, err := domain.NewRobot("Robot_1.a-2", "site-north", now)
+	for _, id := range []domain.RobotID{"Robot_1.a-2", "robot.1", "..."} {
+		_, err := domain.NewRobot(id, "site-north", now)
 
-	require.NoError(t, err)
+		require.NoError(t, err, id)
+	}
 }
 
 func TestNewRobotRejectsInvalidRegistrations(t *testing.T) {
@@ -47,6 +49,8 @@ func TestNewRobotRejectsInvalidRegistrations(t *testing.T) {
 		"id with a space":      {id: "robot 101", siteID: "site-north"},
 		"id with a non-ASCII":  {id: "roböt", siteID: "site-north"},
 		"id longer than limit": {id: domain.RobotID(strings.Repeat("r", 65)), siteID: "site-north"},
+		"id that is one dot":   {id: ".", siteID: "site-north"},
+		"id that is two dots":  {id: "..", siteID: "site-north"},
 		"empty site id":        {id: "robot-101", siteID: ""},
 	}
 

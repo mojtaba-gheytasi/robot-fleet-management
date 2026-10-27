@@ -179,7 +179,8 @@ Error codes and payloads are in the [technical design](./ROBOT_FLEET_IMPLEMENTAT
 - **Smaller limits:** the robot list and the unresolved-alert list have no paging (a robot
   has at most one unresolved alert); terminal alerts and history are capped at 200; a
   request stops after 5 s with `REQUEST_TIMEOUT`; robot IDs are 1–64 letters, digits, `-`,
-  `_` or `.`, because they appear in URLs; unknown routes get Go's plain-text 404.
+  `_` or `.`, but not `.` or `..`, because they appear in URLs; unknown routes get Go's
+  plain-text 404.
 
 ### What I would do differently with more time or in production
 

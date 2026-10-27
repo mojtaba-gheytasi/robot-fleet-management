@@ -182,7 +182,7 @@ func (robot *Robot) ConnectivityAt(now time.Time) Connectivity {
 func (robot *Robot) validate() error {
 	if isValidRobotID(robot.id) == false {
 		return fmt.Errorf(
-			"%w: id must be 1 to %d letters, digits, '-', '_' or '.'",
+			"%w: id must be 1 to %d letters, digits, '-', '_' or '.', and not '.' or '..'",
 			ErrInvalidRobot,
 			maxRobotIDLength,
 		)
@@ -239,6 +239,11 @@ func (robot *Robot) validate() error {
 // Robot IDs appear in URL paths.
 func isValidRobotID(id RobotID) bool {
 	if len(id) == 0 || len(id) > maxRobotIDLength {
+		return false
+	}
+
+	// The router cleans these path segments, so the robot's URLs would point elsewhere.
+	if id == "." || id == ".." {
 		return false
 	}
 
